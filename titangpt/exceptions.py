@@ -1,11 +1,3 @@
-"""
-Custom exception classes for TitanGPT.
-
-This module defines all custom exceptions used throughout the TitanGPT application
-for more granular error handling and better error reporting.
-"""
-
-
 class TitanGPTException(Exception):
     """Base exception class for all TitanGPT-specific exceptions."""
 

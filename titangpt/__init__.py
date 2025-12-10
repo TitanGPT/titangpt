@@ -1,10 +1,4 @@
-"""
-TitanGPT Python Client Library
-
-A comprehensive Python client for interacting with the TitanGPT API.
-"""
-
-__version__ = "0.1.5"
+__version__ = "0.1.7"
 __author__ = "TitanGPT"
 __license__ = "MIT"
 
@@ -14,8 +8,12 @@ from titangpt.exceptions import (
     TitanGPTException,
     APIError,
     AuthenticationError,
+    AuthorizationError,
     ValidationError,
     RateLimitError,
+    ModelNotFoundError,
+    TimeoutError,
+    ConnectionError
 )
 
 __all__ = [
@@ -24,16 +22,17 @@ __all__ = [
     "TitanGPTException",
     "APIError",
     "AuthenticationError",
+    "AuthorizationError",
     "ValidationError",
     "RateLimitError",
+    "ModelNotFoundError",
+    "TimeoutError",
+    "ConnectionError"
 ]
 
 _client = None
 
 def get_client(api_key: str = None, base_url: str = "https://api.titangpt.ru") -> TitanGPT:
-    """
-    Get or create a TitanGPT client instance.
-    """
     global _client
     
     if _client is None:
@@ -41,10 +40,6 @@ def get_client(api_key: str = None, base_url: str = "https://api.titangpt.ru") -
     
     return _client
 
-
 def set_api_key(api_key: str) -> None:
-    """
-    Set or update the API key for the default client.
-    """
     global _client
     _client = TitanGPT(api_key=api_key)

@@ -1,10 +1,3 @@
-"""
-Type definitions for TitanGPT using dataclasses.
-
-This module contains dataclass definitions for various types used throughout
-the TitanGPT application, providing type safety and structure for data models.
-"""
-
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from datetime import datetime
@@ -12,8 +5,6 @@ from datetime import datetime
 
 @dataclass
 class Message:
-    """Represents a single message in a conversation."""
-    
     role: str
     content: str
     timestamp: Optional[datetime] = None
@@ -22,7 +13,7 @@ class Message:
 
 @dataclass
 class Conversation:
-    """Represents a conversation session."""
+
     
     id: str
     title: str
@@ -34,24 +25,20 @@ class Conversation:
 
 @dataclass
 class ModelConfig:
-    """Configuration settings for a language model."""
+
     
     name: str
     model_id: str
     temperature: float = 0.7
     max_tokens: int = 2048
-    top_p: float = 1.0
-    top_k: int = 50
-    frequency_penalty: float = 0.0
-    presence_penalty: float = 0.0
     timeout: int = 30
-    retry_attempts: int = 3
+    retry_attempts: int = 10
     additional_params: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class APIResponse:
-    """Represents a response from an API call."""
+
     
     success: bool
     data: Optional[Any] = None
@@ -62,7 +49,7 @@ class APIResponse:
 
 @dataclass
 class User:
-    """Represents a user in the system."""
+
     
     id: str
     username: str
@@ -75,7 +62,7 @@ class User:
 
 @dataclass
 class Token:
-    """Represents an authentication token."""
+
     
     access_token: str
     token_type: str = "Bearer"
@@ -87,7 +74,7 @@ class Token:
 
 @dataclass
 class CompletionRequest:
-    """Represents a completion request to a language model."""
+
     
     prompt: str
     model: str
@@ -102,7 +89,7 @@ class CompletionRequest:
 
 @dataclass
 class CompletionResponse:
-    """Represents a completion response from a language model."""
+
     
     id: str
     text: str
@@ -115,7 +102,7 @@ class CompletionResponse:
 
 @dataclass
 class Error:
-    """Represents an error response."""
+
     
     code: str
     message: str

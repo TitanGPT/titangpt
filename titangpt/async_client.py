@@ -1,9 +1,8 @@
 import os
-import json
 import asyncio
 import aiofiles
 from typing import Any, Dict, Optional, List, Union
-import aiohttp
+import httpx  
 from titangpt.exceptions import (
     APIError,
     AuthenticationError,
@@ -64,17 +63,28 @@ class AsyncTranscriptions:
         self._client = client
 
     async def create(self, file, model: str = "whisper-1", **kwargs) -> TitanResponse:
-        data = aiohttp.FormData()
-        if isinstance(file, str):
-            data.add_field('file', open(file, 'rb'))
-        else:
-            data.add_field('file', file)
-            
-        data.add_field('model', model)
+        files = {}
+        data = {'model': model}
+        
         for k, v in kwargs.items():
-            data.add_field(k, str(v))
+            data[k] = str(v)
+
+        file_obj = None
+        should_close = False
+
+        try:
+            if isinstance(file, str):
+                file_obj = open(file, 'rb')
+                should_close = True
+                files['file'] = file_obj
+            else:
+                files['file'] = file
             
-        return await self._client._post("v1/audio/transcriptions", data=data)
+            await self._client._ensure_client()
+            return await self._client._request("POST", "v1/audio/transcriptions", data=data, files=files)
+        finally:
+            if should_close and file_obj:
+                file_obj.close()
 
 class AsyncMusic:
     def __init__(self, client):
@@ -87,13 +97,12 @@ class AsyncMusic:
         return await self._client._get(f"v2/music/lyrics/{video_id}")
 
     async def download(self, video_id: str, save_path: str) -> str:
-        await self._client._ensure_session()
+        await self._client._ensure_client()
         url = f"{self._client.base_url}/v2/music/download/{video_id}"
         
         try:
-            timeout = aiohttp.ClientTimeout(total=300) 
-            async with self._client._session.get(url, timeout=timeout) as resp:
-                if resp.status >= 400:
+            async with self._client._session.stream("GET", url, timeout=300.0) as resp:
+                if resp.status_code >= 400:
                     await self._client._handle_error(resp)
                 
                 if os.path.isdir(save_path):
@@ -101,7 +110,7 @@ class AsyncMusic:
                     save_path = os.path.join(save_path, filename)
                 
                 async with aiofiles.open(save_path, mode='wb') as f:
-                    async for chunk in resp.content.iter_chunked(8192):
+                    async for chunk in resp.aiter_bytes(chunk_size=8192):
                         await f.write(chunk)
                 
                 return save_path
@@ -130,7 +139,7 @@ class AsyncTitanGPT:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.user_id = user_id
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._session: Optional[httpx.AsyncClient] = None 
 
         self.chat = AsyncChat(self)
         self.images = AsyncImages(self)
@@ -138,44 +147,54 @@ class AsyncTitanGPT:
         self.music = AsyncMusic(self)
         self.models = AsyncModels(self)
 
-    async def _ensure_session(self):
-        if self._session is None or self._session.closed:
+    async def _ensure_client(self):
+        if self._session is None or self._session.is_closed:
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
-                "User-Agent": "TitanGPT-Python-Async/1.0"
+                "User-Agent": "TitanGPT-Python-Async/1.0 (HTTP/2)"
             }
             if self.user_id:
                 headers["x-user-id"] = str(self.user_id)
-                
-            self._session = aiohttp.ClientSession(headers=headers)
+            
+            self._session = httpx.AsyncClient(
+                headers=headers, 
+                http2=True,
+                timeout=self.timeout
+            )
 
     async def check_health(self) -> Dict[str, str]:
-        await self._ensure_session()
+        await self._ensure_client()
         url = f"{self.base_url}/"
         try:
-            async with self._session.get(url, timeout=10) as response:
-                if response.status == 200:
-                    return await response.json()
-                text = await response.text()
-                raise APIError(f"Health check failed with status {response.status}: {text}")
+            response = await self._session.get(url, timeout=10.0)
+            if response.status_code == 200:
+                return response.json()
+            text = response.text
+            raise APIError(f"Health check failed with status {response.status_code}: {text}")
         except Exception as e:
             raise APIError(f"Health check failed: {str(e)}")
 
-    async def _request(self, method: str, path: str, json: dict = None, data = None, params: dict = None) -> TitanResponse:
-        await self._ensure_session()
+    async def _request(self, method: str, path: str, json: dict = None, data = None, params: dict = None, files = None) -> TitanResponse:
+        await self._ensure_client()
         url = f"{self.base_url}/{path}"
         
         try:
-            timeout = aiohttp.ClientTimeout(total=self.timeout)
+            resp = await self._session.request(
+                method, 
+                url, 
+                json=json, 
+                data=data, 
+                params=params, 
+                files=files
+            )
             
-            async with self._session.request(method, url, json=json, data=data, params=params, timeout=timeout) as resp:
-                if resp.status >= 400:
-                    await self._handle_error(resp)
+            if resp.status_code >= 400:
+                await self._handle_error(resp)
 
-                result = await resp.json()
-                return TitanResponse(result)
+            result = resp.json()
+            return TitanResponse(result)
 
-        except aiohttp.ClientError as e:
+        except httpx.RequestError as e:
             raise APIError(f"Connection error: {str(e)}")
         except Exception as e:
             if isinstance(e, TitanGPTException):
@@ -188,37 +207,39 @@ class AsyncTitanGPT:
     async def _get(self, path: str, params: dict = None) -> TitanResponse:
         return await self._request("GET", path, params=params)
 
-    async def _handle_error(self, response):
+    async def _handle_error(self, response: httpx.Response):
         try:
-            error_data = await response.json()
+            error_data = response.json()
             message = error_data.get("error", {}).get("message") or error_data.get("message")
             if not message and "detail" in error_data:
                 message = error_data["detail"]
         except:
-            message = await response.text()
+            message = response.text
 
         if not message:
-            message = f"Error code: {response.status}"
+            message = f"Error code: {response.status_code}"
 
-        if response.status == 400:
+        status = response.status_code
+
+        if status == 400:
             raise ValidationError(message)
-        elif response.status == 401:
+        elif status == 401:
             raise AuthenticationError(f"Authentication failed: {message}")
-        elif response.status == 403:
+        elif status == 403:
             raise AuthenticationError(f"Permission denied (Invalid API Key): {message}")
-        elif response.status == 404:
+        elif status == 404:
             raise ModelNotFoundError(message)
-        elif response.status == 429:
+        elif status == 429:
             raise RateLimitError(message)
         else:
-            raise APIError(f"TitanGPT API Error {response.status}: {message}")
+            raise APIError(f"TitanGPT API Error {status}: {message}")
 
     async def close(self):
-        if self._session and not self._session.closed:
-            await self._session.close()
+        if self._session and not self._session.is_closed:
+            await self._session.aclose()
 
     async def __aenter__(self):
-        await self._ensure_session()
+        await self._ensure_client()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):

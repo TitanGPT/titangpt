@@ -40,7 +40,7 @@ client = TitanGPT(api_key="YOUR_API_KEY")
 
 # 1. Chat Completion
 response = client.chat.completions.create(
-    model="gpt-5.1,
+    model="gpt-5.2-2025-12-11,
     messages=[
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Explain quantum physics in 1 sentence."}
@@ -73,7 +73,7 @@ async def main():
     client = AsyncTitanGPT(api_key="YOUR_API_KEY")
 
     response = await client.chat.completions.create(
-        model="gpt-5.1",
+        model="gpt-5.2-2025-12-11",
         messages=[{"role": "user", "content": "Write a haiku about Python."}]
     )
     print(response.choices[0].message.content)
@@ -90,7 +90,7 @@ You can pass any arbitrary parameters (like `reasoning_effort` or custom diction
 
 ```python
 response = client.chat.completions.create(
-    model="gpt-5.1", 
+    model="gpt-5.2-2025-12-11", 
     messages=[{"role": "user", "content": "Solve this logic puzzle..."}],
     
     # Specific parameter for reasoning models
@@ -158,7 +158,7 @@ client = TitanGPT(api_key="ВАШ_КЛЮЧ")
 
 # 1. Чат (Генерация текста)
 response = client.chat.completions.create(
-    model="gpt-5.1",
+    model="gpt-5.2-2025-12-11",
     messages=[
         {"role": "system", "content": "Ты полезный помощник."},
         {"role": "user", "content": "Привет! Расскажи коротко о квантовой физике."}
@@ -191,7 +191,7 @@ async def main():
     client = AsyncTitanGPT(api_key="ВАШ_КЛЮЧ")
 
     response = await client.chat.completions.create(
-        model="gpt-5.1",
+        model="gpt-5.2-2025-12-11",
         messages=[{"role": "user", "content": "Напиши хокку про Python."}]
     )
     print(response.choices[0].message.content)
@@ -209,7 +209,7 @@ if __name__ == "__main__":
 
 ```python
 response = client.chat.completions.create(
-    model="gpt-5.1", 
+    model="gpt-5.2-2025-12-11", 
     messages=[{"role": "user", "content": "Реши задачу..."}],
     
     # Параметр для o-серии моделей

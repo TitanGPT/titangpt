@@ -40,7 +40,7 @@ client = TitanGPT(api_key="YOUR_API_KEY")
 
 # 1. Chat Completion
 response = client.chat.completions.create(
-    model="gpt-5.2-2025-12-11,
+    model="gpt-5.2-2025-12-11",
     messages=[
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Explain quantum physics in 1 sentence."}

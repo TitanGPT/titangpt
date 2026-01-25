@@ -27,7 +27,7 @@ class AsyncCompletions:
     def __init__(self, client):
         self._client = client
 
-    async def create(self, model: str, messages: List[Dict[str, str]], **kwargs) -> TitanResponse:
+    async def create(self, model: str, messages: List[Dict[str, str]], **kwargs) -> Union[TitanResponse, List]:
         payload = {
             "model": model,
             "messages": messages,
@@ -43,7 +43,7 @@ class AsyncImages:
     def __init__(self, client):
         self._client = client
 
-    async def generate(self, prompt: str, model: str = "flux", n: int = 1, size: str = "1024x1024", **kwargs) -> TitanResponse:
+    async def generate(self, prompt: str, model: str = "flux", n: int = 1, size: str = "1024x1024", **kwargs) -> Union[TitanResponse, List]:
         payload = {
             "prompt": prompt,
             "model": model,
@@ -61,7 +61,7 @@ class AsyncTranscriptions:
     def __init__(self, client):
         self._client = client
 
-    async def create(self, file, model: str = "whisper-1", **kwargs) -> TitanResponse:
+    async def create(self, file, model: str = "whisper-1", **kwargs) -> Union[TitanResponse, List]:
         files = {}
         data = {'model': model}
         
@@ -106,7 +106,7 @@ class BaseMusicDownloader:
                     save_path = os.path.join(save_path, filename)
                 
                 async with aiofiles.open(save_path, mode='wb') as f:
-                    async for chunk in resp.aiter_bytes(chunk_size=8192):
+                    async for chunk in resp.aiter_bytes():
                         await f.write(chunk)
                 
                 return save_path
@@ -117,26 +117,31 @@ class BaseMusicDownloader:
 
 class AsyncYandexMusic(BaseMusicDownloader):
     
-    async def search(self, query: str) -> TitanResponse:
+    async def search(self, query: str) -> Union[TitanResponse, List]:
         return await self._client._post("v2/yandex/search", json={"query": query})
 
-    async def lyrics(self, track_id: str) -> TitanResponse:
+    async def lyrics(self, track_id: str) -> Union[TitanResponse, List]:
         return await self._client._get(f"v2/yandex/lyrics/{track_id}")
 
+ 
     async def download(self, track_id: str, save_path: str, lossless: bool = False) -> str:
-        if lossless:
-            url = f"{self._client.base_url}/v2/yandex/download/{track_id}"
-            return await self._download_file(url, save_path, track_id, method="POST", json_body={"lossless": True}, ext="flac")
-        else:
-            url = f"{self._client.base_url}/v2/yandex/download/{track_id}"
-            return await self._download_file(url, save_path, track_id, method="GET", ext="mp3")
+        """Скачивает трек, всегда используя метод POST."""
+        url = f"{self._client.base_url}/v2/yandex/download/{track_id}"
+        return await self._download_file(
+            url,
+            save_path,
+            track_id,
+            method="POST",
+            json_body={"lossless": lossless},
+            ext="flac" if lossless else "mp3"
+        )
 
 class AsyncYouTubeMusic(BaseMusicDownloader):
 
-    async def search(self, query: str) -> TitanResponse:
+    async def search(self, query: str) -> Union[TitanResponse, List]:
         return await self._client._post("v2/youtube/music/search", json={"query": query})
 
-    async def lyrics(self, video_id: str) -> TitanResponse:
+    async def lyrics(self, video_id: str) -> Union[TitanResponse, List]:
         return await self._client._get(f"v2/youtube/music/lyrics/{video_id}")
 
     async def download(self, video_id: str, save_path: str) -> str:
@@ -148,33 +153,31 @@ class AsyncMusic:
         self.yandex = AsyncYandexMusic(client)
         self.youtube = AsyncYouTubeMusic(client)
 
-
-
 class AsyncModerations:
     def __init__(self, client):
         self._client = client
 
-    async def create(self, input: str) -> TitanResponse:
+    async def create(self, input: str) -> Union[TitanResponse, List]:
         return await self._client._post("v1/beta/moderations", json={"input": input})
 
 class AsyncThreads:
     def __init__(self, client):
         self._client = client
 
-    async def create(self, metadata: Optional[Dict] = None) -> TitanResponse:
+    async def create(self, metadata: Optional[Dict] = None) -> Union[TitanResponse, List]:
         payload = {}
         if metadata:
             payload["metadata"] = metadata
         return await self._client._post("beta/v1/threads", json=payload)
 
-    async def add_message(self, thread_id: str, content: str, role: str = "user") -> TitanResponse:
+    async def add_message(self, thread_id: str, content: str, role: str = "user") -> Union[TitanResponse, List]:
         payload = {
             "role": role,
             "content": content
         }
         return await self._client._post(f"beta/v1/threads/{thread_id}/messages", json=payload)
 
-    async def run(self, thread_id: str, assistant_id: str, model: str = "gpt-4o", instructions: Optional[str] = None) -> TitanResponse:
+    async def run(self, thread_id: str, assistant_id: str, model: str = "gpt-4o", instructions: Optional[str] = None) -> Union[TitanResponse, List]:
         payload = {
             "assistant_id": assistant_id,
             "model": model
@@ -183,14 +186,14 @@ class AsyncThreads:
             payload["instructions"] = instructions
         return await self._client._post(f"beta/v1/threads/{thread_id}/runs", json=payload)
 
-    async def list_messages(self, thread_id: str) -> TitanResponse:
+    async def list_messages(self, thread_id: str) -> Union[TitanResponse, List]:
         return await self._client._get(f"beta/v1/threads/{thread_id}/messages")
 
 class AsyncModels:
     def __init__(self, client):
         self._client = client
 
-    async def list(self) -> TitanResponse:
+    async def list(self) -> Union[TitanResponse, List]:
         return await self._client._post("v1/models")
 
 class AsyncTitanGPT:
@@ -218,7 +221,9 @@ class AsyncTitanGPT:
         self.models = AsyncModels(self)
 
     async def _ensure_client(self):
-        if self._session is None or self._session.is_closed:
+        is_closed = getattr(self._session, "is_closed", False) if self._session else True
+        
+        if self._session is None or is_closed:
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
                 "User-Agent": "TitanGPT-Python-Async/1.2 (HTTP/2)",
@@ -245,7 +250,7 @@ class AsyncTitanGPT:
         except Exception as e:
             raise APIError(f"Health check failed: {str(e)}")
 
-    async def _request(self, method: str, path: str, json: dict = None, data = None, params: dict = None, files = None) -> TitanResponse:
+    async def _request(self, method: str, path: str, json: dict = None, data = None, params: dict = None, files = None) -> Union[TitanResponse, List]:
         await self._ensure_client()
         url = f"{self.base_url}/{path}"
         request_headers = self._session.headers.copy()
@@ -268,6 +273,8 @@ class AsyncTitanGPT:
                 await self._handle_error(resp)
 
             result = resp.json()
+            if isinstance(result, list):
+                return [TitanResponse(i) if isinstance(i, dict) else i for i in result]
             return TitanResponse(result)
 
         except httpx.RequestError as e:
@@ -277,10 +284,10 @@ class AsyncTitanGPT:
                 raise e
             raise APIError(f"Unexpected error: {str(e)}")
 
-    async def _post(self, path: str, json: dict = None, data = None) -> TitanResponse:
+    async def _post(self, path: str, json: dict = None, data = None) -> Union[TitanResponse, List]:
         return await self._request("POST", path, json=json, data=data)
 
-    async def _get(self, path: str, params: dict = None) -> TitanResponse:
+    async def _get(self, path: str, params: dict = None) -> Union[TitanResponse, List]:
         return await self._request("GET", path, params=params)
 
     async def _handle_error(self, response: httpx.Response):
@@ -311,8 +318,9 @@ class AsyncTitanGPT:
             raise APIError(f"TitanGPT API Error {status}: {message}")
 
     async def close(self):
-        if self._session and not self._session.is_closed:
+        if self._session and not getattr(self._session, "is_closed", False):
             await self._session.aclose()
+        self._session = None
 
     async def __aenter__(self):
         await self._ensure_client()

@@ -13,7 +13,7 @@ from titangpt.exceptions import (
     ConnectionError
 )
 
-__version__ = "0.2.0b1"
+__version__ = "0.2.0"
 __author__ = "TitanGPT"
 __license__ = "MIT"
 

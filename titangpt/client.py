@@ -29,13 +29,13 @@ class Completions:
     def __init__(self, client):
         self._client = client
 
-    def create(self, model: str, messages: List[Dict[str, str]], **kwargs) -> TitanResponse:
+    def create(self, model: str, messages: List[Dict[str, str]], **kwargs) -> Union[TitanResponse, List]:
         payload = {
             "model": model,
             "messages": messages,
             **kwargs
         }
-        return self._client._post("v1/chat/completions", json=payload)
+        return self._client._post("v1/chat/comcompletions", json=payload)
 
 class Chat:
     def __init__(self, client):
@@ -45,7 +45,7 @@ class Images:
     def __init__(self, client):
         self._client = client
 
-    def generate(self, prompt: str, model: str = "flux", n: int = 1, size: str = "1024x1024", **kwargs) -> TitanResponse:
+    def generate(self, prompt: str, model: str = "flux", n: int = 1, size: str = "1024x1024", **kwargs) -> Union[TitanResponse, List]:
         payload = {
             "prompt": prompt,
             "model": model,
@@ -63,7 +63,7 @@ class Transcriptions:
     def __init__(self, client):
         self._client = client
 
-    def create(self, file, model: str = "whisper-1", **kwargs) -> TitanResponse:
+    def create(self, file, model: str = "whisper-1", **kwargs) -> Union[TitanResponse, List]:
         if isinstance(file, str):
              with open(file, "rb") as f:
                  files = {"file": f}
@@ -73,7 +73,6 @@ class Transcriptions:
         files = {"file": file}
         data = {"model": model, **kwargs}
         return self._client._post("v1/audio/transcriptions", files=files, data=data)
-
 
 
 class BaseMusicDownloader:
@@ -93,36 +92,29 @@ class BaseMusicDownloader:
         return save_path
 
 class YandexMusic(BaseMusicDownloader):
-    def search(self, query: str) -> TitanResponse:
+    def search(self, query: str) -> Union[TitanResponse, List]:
         return self._client._post("v2/yandex/search", json={"query": query})
 
-    def lyrics(self, track_id: str) -> TitanResponse:
+    def lyrics(self, track_id: str) -> Union[TitanResponse, List]:
         return self._client._get(f"v2/yandex/lyrics/{track_id}")
 
+
     def download(self, track_id: str, save_path: str, lossless: bool = False) -> str:
-        if lossless:
-            return self._download_file(
-                url=f"v2/yandex/download/{track_id}",
-                save_path=save_path,
-                file_id=track_id,
-                method="POST",
-                json_body={"lossless": True},
-                ext="flac"
-            )
-        else:
-            return self._download_file(
-                url=f"v2/yandex/download/{track_id}",
-                save_path=save_path,
-                file_id=track_id,
-                method="GET",
-                ext="mp3"
-            )
+        """Скачивает трек, всегда используя метод POST."""
+        return self._download_file(
+            url=f"v2/yandex/download/{track_id}",
+            save_path=save_path,
+            file_id=track_id,
+            method="POST",
+            json_body={"lossless": lossless},
+            ext="flac" if lossless else "mp3"
+        )
 
 class YouTubeMusic(BaseMusicDownloader):
-    def search(self, query: str) -> TitanResponse:
+    def search(self, query: str) -> Union[TitanResponse, List]:
         return self._client._post("v2/youtube/music/search", json={"query": query})
 
-    def lyrics(self, video_id: str) -> TitanResponse:
+    def lyrics(self, video_id: str) -> Union[TitanResponse, List]:
         return self._client._get(f"v2/youtube/music/lyrics/{video_id}")
 
     def download(self, video_id: str, save_path: str) -> str:
@@ -144,27 +136,27 @@ class Moderations:
     def __init__(self, client):
         self._client = client
 
-    def create(self, input: str) -> TitanResponse:
+    def create(self, input: str) -> Union[TitanResponse, List]:
         return self._client._post("v1/beta/moderations", json={"input": input})
 
 class Threads:
     def __init__(self, client):
         self._client = client
 
-    def create(self, metadata: Optional[Dict] = None) -> TitanResponse:
+    def create(self, metadata: Optional[Dict] = None) -> Union[TitanResponse, List]:
         payload = {}
         if metadata:
             payload["metadata"] = metadata
         return self._client._post("beta/v1/threads", json=payload)
 
-    def add_message(self, thread_id: str, content: str, role: str = "user") -> TitanResponse:
+    def add_message(self, thread_id: str, content: str, role: str = "user") -> Union[TitanResponse, List]:
         payload = {
             "role": role,
             "content": content
         }
         return self._client._post(f"beta/v1/threads/{thread_id}/messages", json=payload)
 
-    def run(self, thread_id: str, assistant_id: str, model: str = "gpt-4o", instructions: Optional[str] = None) -> TitanResponse:
+    def run(self, thread_id: str, assistant_id: str, model: str = "gpt-4o", instructions: Optional[str] = None) -> Union[TitanResponse, List]:
         payload = {
             "assistant_id": assistant_id,
             "model": model
@@ -173,14 +165,14 @@ class Threads:
             payload["instructions"] = instructions
         return self._client._post(f"beta/v1/threads/{thread_id}/runs", json=payload)
 
-    def list_messages(self, thread_id: str) -> TitanResponse:
+    def list_messages(self, thread_id: str) -> Union[TitanResponse, List]:
         return self._client._get(f"beta/v1/threads/{thread_id}/messages")
 
 class Models:
     def __init__(self, client):
         self._client = client
 
-    def list(self) -> TitanResponse:
+    def list(self) -> Union[TitanResponse, List]:
         return self._client._post("v1/models")
 
 class TitanGPT:
@@ -213,7 +205,7 @@ class TitanGPT:
         
         auth_val = f"Bearer {self.api_key}"
         headers = {
-            "Authorization": auth_val.encode('utf-8'), 
+            "Authorization": auth_val, 
             "User-Agent": "TitanGPT-Python/1.2",
         }
         if user_id:
@@ -260,13 +252,19 @@ class TitanGPT:
                 raise e
             raise APIError(f"Unexpected error: {str(e)}")
 
-    def _post(self, path: str, json: dict = None, files=None, data=None) -> TitanResponse:
-        response = self._request("POST", path, json=json, files=files, data=data)
-        return TitanResponse(response.json())
+    def _process_response(self, response: requests.Response) -> Union[TitanResponse, List]:
+        data = response.json()
+        if isinstance(data, list):
+            return [TitanResponse(i) if isinstance(i, dict) else i for i in data]
+        return TitanResponse(data)
 
-    def _get(self, path: str, params: dict = None) -> TitanResponse:
+    def _post(self, path: str, json: dict = None, files=None, data=None) -> Union[TitanResponse, List]:
+        response = self._request("POST", path, json=json, files=files, data=data)
+        return self._process_response(response)
+
+    def _get(self, path: str, params: dict = None) -> Union[TitanResponse, List]:
         response = self._request("GET", path, params=params)
-        return TitanResponse(response.json())
+        return self._process_response(response)
 
     def _handle_error(self, response):
         try:

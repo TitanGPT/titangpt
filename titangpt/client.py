@@ -74,27 +74,107 @@ class Transcriptions:
         data = {"model": model, **kwargs}
         return self._client._post("v1/audio/transcriptions", files=files, data=data)
 
-class Music:
+
+
+class BaseMusicDownloader:
     def __init__(self, client):
         self._client = client
-    
-    def search(self, query: str) -> TitanResponse:
-        return self._client._post("v2/music/search", json={"query": query})
 
-    def lyrics(self, video_id: str) -> TitanResponse:
-        return self._client._get(f"v2/music/lyrics/{video_id}")
-
-    def download(self, video_id: str, save_path: str) -> str:
-        response = self._client._get_binary(f"v2/music/download/{video_id}")
+    def _download_file(self, url: str, save_path: str, file_id: str, method: str = "GET", json_body: dict = None, ext: str = "mp3") -> str:
+        response = self._client._request(method, url, json=json_body, stream=True)
         
         if os.path.isdir(save_path):
-            filename = f"{video_id}.mp3"
+            filename = f"{file_id}.{ext}"
             save_path = os.path.join(save_path, filename)
 
         with open(save_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
         return save_path
+
+class YandexMusic(BaseMusicDownloader):
+    def search(self, query: str) -> TitanResponse:
+        return self._client._post("v2/yandex/search", json={"query": query})
+
+    def lyrics(self, track_id: str) -> TitanResponse:
+        return self._client._get(f"v2/yandex/lyrics/{track_id}")
+
+    def download(self, track_id: str, save_path: str, lossless: bool = False) -> str:
+        if lossless:
+            return self._download_file(
+                url=f"v2/yandex/download/{track_id}",
+                save_path=save_path,
+                file_id=track_id,
+                method="POST",
+                json_body={"lossless": True},
+                ext="flac"
+            )
+        else:
+            return self._download_file(
+                url=f"v2/yandex/download/{track_id}",
+                save_path=save_path,
+                file_id=track_id,
+                method="GET",
+                ext="mp3"
+            )
+
+class YouTubeMusic(BaseMusicDownloader):
+    def search(self, query: str) -> TitanResponse:
+        return self._client._post("v2/youtube/music/search", json={"query": query})
+
+    def lyrics(self, video_id: str) -> TitanResponse:
+        return self._client._get(f"v2/youtube/music/lyrics/{video_id}")
+
+    def download(self, video_id: str, save_path: str) -> str:
+        return self._download_file(
+            url=f"v2/youtube/music/download/{video_id}",
+            save_path=save_path,
+            file_id=video_id,
+            method="GET",
+            ext="mp3"
+        )
+
+class Music:
+    def __init__(self, client):
+        self.yandex = YandexMusic(client)
+        self.youtube = YouTubeMusic(client)
+
+
+class Moderations:
+    def __init__(self, client):
+        self._client = client
+
+    def create(self, input: str) -> TitanResponse:
+        return self._client._post("v1/beta/moderations", json={"input": input})
+
+class Threads:
+    def __init__(self, client):
+        self._client = client
+
+    def create(self, metadata: Optional[Dict] = None) -> TitanResponse:
+        payload = {}
+        if metadata:
+            payload["metadata"] = metadata
+        return self._client._post("beta/v1/threads", json=payload)
+
+    def add_message(self, thread_id: str, content: str, role: str = "user") -> TitanResponse:
+        payload = {
+            "role": role,
+            "content": content
+        }
+        return self._client._post(f"beta/v1/threads/{thread_id}/messages", json=payload)
+
+    def run(self, thread_id: str, assistant_id: str, model: str = "gpt-4o", instructions: Optional[str] = None) -> TitanResponse:
+        payload = {
+            "assistant_id": assistant_id,
+            "model": model
+        }
+        if instructions:
+            payload["instructions"] = instructions
+        return self._client._post(f"beta/v1/threads/{thread_id}/runs", json=payload)
+
+    def list_messages(self, thread_id: str) -> TitanResponse:
+        return self._client._get(f"beta/v1/threads/{thread_id}/messages")
 
 class Models:
     def __init__(self, client):
@@ -134,7 +214,7 @@ class TitanGPT:
         auth_val = f"Bearer {self.api_key}"
         headers = {
             "Authorization": auth_val.encode('utf-8'), 
-            "User-Agent": "TitanGPT-Python/1.0",
+            "User-Agent": "TitanGPT-Python/1.2",
         }
         if user_id:
             headers["x-user-id"] = str(user_id)
@@ -145,6 +225,8 @@ class TitanGPT:
         self.images = Images(self)
         self.audio = Audio(self)
         self.music = Music(self)
+        self.moderations = Moderations(self)
+        self.threads = Threads(self)
         self.models = Models(self)
 
     def check_health(self) -> Dict[str, str]:
@@ -159,7 +241,11 @@ class TitanGPT:
             raise APIError(f"Health check failed: {str(e)}")
 
     def _request(self, method: str, path: str, **kwargs) -> requests.Response:
-        url = f"{self.base_url}/{path}"
+        if path.startswith("http"):
+             url = path
+        else:
+             url = f"{self.base_url}/{path}"
+             
         try:
             response = self.session.request(method, url, timeout=self.timeout, **kwargs)
             if response.status_code >= 400:
@@ -181,18 +267,6 @@ class TitanGPT:
     def _get(self, path: str, params: dict = None) -> TitanResponse:
         response = self._request("GET", path, params=params)
         return TitanResponse(response.json())
-
-    def _get_binary(self, path: str) -> requests.Response:
-        url = f"{self.base_url}/{path}"
-        try:
-            response = self.session.get(url, stream=True, timeout=self.timeout * 3)
-            if response.status_code >= 400:
-                self._handle_error(response)
-            return response
-        except requests.exceptions.RequestException as e:
-            if isinstance(e, TitanGPTException):
-                raise e
-            raise APIError(f"Connection error: {str(e)}") from e
 
     def _handle_error(self, response):
         try:

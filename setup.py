@@ -5,7 +5,7 @@ long_description = Path("README.md").read_text(encoding="utf-8")
 
 setup(
     name="titangpt",
-    version="0.1.9",
+    version="0.2.0b1",
     author="TitanGPT",
     author_email="info@titangpt.ru",
     description="Official Python client for TitanGPT API",

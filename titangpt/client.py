@@ -1,5 +1,6 @@
 import os
 import json
+import logging
 from typing import Any, Dict, Optional, List, Union
 import requests
 from requests.adapters import HTTPAdapter
@@ -12,6 +13,8 @@ from titangpt.exceptions import (
     ModelNotFoundError,
     TitanGPTException
 )
+
+log = logging.getLogger(__name__)
 
 class TitanResponse(dict):
     def __getattr__(self, name):
@@ -220,6 +223,8 @@ class TitanGPT:
         self.moderations = Moderations(self)
         self.threads = Threads(self)
         self.models = Models(self)
+        
+        log.info("TitanGPT client initialized for base url: %s", self.base_url)
 
     def check_health(self) -> Dict[str, str]:
         url = f"{self.base_url}/" 
@@ -237,17 +242,33 @@ class TitanGPT:
              url = path
         else:
              url = f"{self.base_url}/{path}"
+        
+        log.debug("Sending request: %s %s with args: %s", method, url, kwargs)
              
         try:
             response = self.session.request(method, url, timeout=self.timeout, **kwargs)
+            
+            if log.isEnabledFor(logging.DEBUG):
+                try:
+                    res_content = json.dumps(response.json(), indent=2)
+                except json.JSONDecodeError:
+                    res_content = response.text
+                
+                log.debug("Received response for %s %s (status %s): %s",
+                          method, url, response.status_code, res_content)
+
             if response.status_code >= 400:
                 self._handle_error(response)
             return response
         except requests.exceptions.RequestException as e:
+            log.error("Connection error during %s %s: %s", method, url, e)
+            
             if isinstance(e, TitanGPTException):
                 raise e
             raise APIError(f"Connection error: {str(e)}") from e
         except Exception as e:
+            log.critical("Unexpected error during %s %s: %s", method, url, e)
+            
             if isinstance(e, TitanGPTException):
                 raise e
             raise APIError(f"Unexpected error: {str(e)}")
@@ -279,22 +300,31 @@ class TitanGPT:
             message = f"Error code: {response.status_code}"
 
         if response.status_code == 400:
+            log.debug("Raising ValidationError for status 400.")
             raise ValidationError(message)
         elif response.status_code == 401:
+            log.debug("Raising AuthenticationError for status 401.")
             raise AuthenticationError(f"Authentication failed: {message}")
         elif response.status_code == 403:
+            log.debug("Raising AuthenticationError for status 403.")
             raise AuthenticationError(f"Permission denied (Invalid API Key or Model): {message}")
         elif response.status_code == 404:
+            log.debug("Raising ModelNotFoundError for status 404.")
             raise ModelNotFoundError(message)
         elif response.status_code == 429:
+            log.debug("Raising RateLimitError for status 429.")
             raise RateLimitError(message)
         else:
+            log.debug("Raising generic APIError for status %s.", response.status_code)
             raise APIError(f"TitanGPT API Error {response.status_code}: {message}")
 
     def close(self):
+        log.info("Closing HTTP session.")
         self.session.close()
 
     def __enter__(self):
+        log.debug("Entering context manager for TitanGPT client.")
         return self
     def __exit__(self, exc_type, exc_val, exc_tb):
+        log.debug("Exiting context manager for TitanGPT client. Exception: %s", exc_val)
         self.close()

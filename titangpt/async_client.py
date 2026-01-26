@@ -1,5 +1,6 @@
 import os
 import aiofiles
+import logging
 from typing import Any, Dict, Optional, List, Union
 import httpx
 from titangpt.exceptions import (
@@ -10,6 +11,8 @@ from titangpt.exceptions import (
     ModelNotFoundError,
     TitanGPTException
 )
+
+log = logging.getLogger(__name__)
 
 class TitanResponse(dict):
     def __getattr__(self, name):
@@ -219,6 +222,8 @@ class AsyncTitanGPT:
         self.moderations = AsyncModerations(self)
         self.threads = AsyncThreads(self)
         self.models = AsyncModels(self)
+        
+        log.info("TitanGPT client initialized for base url: %s", self.base_url)
 
     async def _ensure_client(self):
         is_closed = getattr(self._session, "is_closed", False) if self._session else True
@@ -257,6 +262,9 @@ class AsyncTitanGPT:
         assert self._session is not None
         
         url = f"{self.base_url}/{path}"
+        
+        log.debug("Sending request: %s %s with json: %s, data: %s, params: %s, files: %s", method, url, json, data, params, files)
+        
         request_headers = self._session.headers.copy()
         if files:
             if "Content-Type" in request_headers:
@@ -271,7 +279,10 @@ class AsyncTitanGPT:
                 params=params, 
                 files=files,
                 headers=request_headers
-            )
+            )   
+                
+            log.debug("Received response for %s %s (status %s): %s",
+                      method, url, resp.status_code, resp.text)
             
             if resp.status_code >= 400:
                 await self._handle_error(resp)
@@ -282,8 +293,12 @@ class AsyncTitanGPT:
             return TitanResponse(result)
 
         except httpx.RequestError as e:
+            log.error("Connection error during %s %s: %s", method, url, e)
+            
             raise APIError(f"Connection error: {str(e)}")
         except Exception as e:
+            log.critical("Unexpected error during %s %s: %s", method, url, e)
+            
             if isinstance(e, TitanGPTException):
                 raise e
             raise APIError(f"Unexpected error: {str(e)}")
@@ -309,26 +324,35 @@ class AsyncTitanGPT:
         status = response.status_code
 
         if status == 400:
+            log.debug("Raising ValidationError for status 400.")
             raise ValidationError(message)
         elif status == 401:
+            log.debug("Raising AuthenticationError for status 401.")
             raise AuthenticationError(f"Authentication failed: {message}")
         elif status == 403:
+            log.debug("Raising AuthenticationError for status 403.")
             raise AuthenticationError(f"Permission denied (Invalid API Key): {message}")
         elif status == 404:
+            log.debug("Raising ModelNotFoundError for status 404.")
             raise ModelNotFoundError(message)
         elif status == 429:
+            log.debug("Raising RateLimitError for status 429.")
             raise RateLimitError(message)
         else:
+            log.debug("Raising generic APIError for status %s.", status)
             raise APIError(f"TitanGPT API Error {status}: {message}")
 
     async def close(self):
+        log.info("Closing HTTP session.")
         if self._session and not getattr(self._session, "is_closed", False):
             await self._session.aclose()
         self._session = None
 
     async def __aenter__(self):
+        log.debug("Entering context manager for TitanGPT client.")
         await self._ensure_client()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        log.debug("Exiting context manager for TitanGPT client. Exception: %s", exc_val)
         await self.close()

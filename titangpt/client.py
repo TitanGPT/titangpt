@@ -35,7 +35,7 @@ class Completions:
             "messages": messages,
             **kwargs
         }
-        return self._client._post("v1/chat/comcompletions", json=payload)
+        return self._client._post("v1/chat/completions", json=payload)
 
 class Chat:
     def __init__(self, client):

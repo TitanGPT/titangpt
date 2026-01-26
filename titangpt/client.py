@@ -79,7 +79,7 @@ class BaseMusicDownloader:
     def __init__(self, client):
         self._client = client
 
-    def _download_file(self, url: str, save_path: str, file_id: str, method: str = "GET", json_body: dict = None, ext: str = "mp3") -> str:
+    def _download_file(self, url: str, save_path: str, file_id: str, method: str = "GET", json_body: Optional[dict] = None, ext: str = "mp3") -> str:
         response = self._client._request(method, url, json=json_body, stream=True)
         
         if os.path.isdir(save_path):
@@ -258,11 +258,11 @@ class TitanGPT:
             return [TitanResponse(i) if isinstance(i, dict) else i for i in data]
         return TitanResponse(data)
 
-    def _post(self, path: str, json: dict = None, files=None, data=None) -> Union[TitanResponse, List]:
+    def _post(self, path: str, json: Optional[dict] = None, files=None, data=None) -> Union[TitanResponse, List]:
         response = self._request("POST", path, json=json, files=files, data=data)
         return self._process_response(response)
 
-    def _get(self, path: str, params: dict = None) -> Union[TitanResponse, List]:
+    def _get(self, path: str, params: Optional[dict] = None) -> Union[TitanResponse, List]:
         response = self._request("GET", path, params=params)
         return self._process_response(response)
 

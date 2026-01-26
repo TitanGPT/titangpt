@@ -1,4 +1,5 @@
 import sys
+from typing import Optional
 from titangpt.client import TitanGPT
 from titangpt.async_client import AsyncTitanGPT
 from titangpt.exceptions import (
@@ -33,7 +34,7 @@ __all__ = [
 
 _client = None
 
-def get_client(api_key: str = None, base_url: str = "https://api.titangpt.ru") -> TitanGPT:
+def get_client(api_key: Optional[str] = None, base_url: str = "https://api.titangpt.ru") -> TitanGPT:
     global _client
     
     if _client is None:

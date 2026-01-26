@@ -1,7 +1,7 @@
 import os
 import aiofiles
 from typing import Any, Dict, Optional, List, Union
-import httpx  
+import httpx
 from titangpt.exceptions import (
     APIError,
     AuthenticationError,
@@ -90,11 +90,11 @@ class BaseMusicDownloader:
     def __init__(self, client):
         self._client = client
 
-    async def _download_file(self, url: str, save_path: str, file_id: str, method: str = "GET", json_body: dict = None, ext: str = "mp3") -> str:
+    async def _download_file(self, url: str, save_path: str, file_id: str, method: str = "GET", json_body: Optional[dict] = None, ext: str = "mp3") -> str:
         await self._client._ensure_client()
         
         try:
-            request_kwargs = {"timeout": 300.0}
+            request_kwargs: Dict[str, Any] = {"timeout": 300.0}
             if method == "POST" and json_body:
                 request_kwargs["json"] = json_body
 
@@ -240,6 +240,8 @@ class AsyncTitanGPT:
 
     async def check_health(self) -> Dict[str, str]:
         await self._ensure_client()
+        assert self._session is not None
+        
         url = f"{self.base_url}/"
         try:
             response = await self._session.get(url, timeout=10.0)
@@ -250,8 +252,10 @@ class AsyncTitanGPT:
         except Exception as e:
             raise APIError(f"Health check failed: {str(e)}")
 
-    async def _request(self, method: str, path: str, json: dict = None, data = None, params: dict = None, files = None) -> Union[TitanResponse, List]:
+    async def _request(self, method: str, path: str, json: Optional[dict] = None, data = None, params: Optional[dict] = None, files = None) -> Union[TitanResponse, List]:
         await self._ensure_client()
+        assert self._session is not None
+        
         url = f"{self.base_url}/{path}"
         request_headers = self._session.headers.copy()
         if files:
@@ -284,10 +288,10 @@ class AsyncTitanGPT:
                 raise e
             raise APIError(f"Unexpected error: {str(e)}")
 
-    async def _post(self, path: str, json: dict = None, data = None) -> Union[TitanResponse, List]:
+    async def _post(self, path: str, json: Optional[dict] = None, data = None) -> Union[TitanResponse, List]:
         return await self._request("POST", path, json=json, data=data)
 
-    async def _get(self, path: str, params: dict = None) -> Union[TitanResponse, List]:
+    async def _get(self, path: str, params: Optional[dict] = None) -> Union[TitanResponse, List]:
         return await self._request("GET", path, params=params)
 
     async def _handle_error(self, response: httpx.Response):

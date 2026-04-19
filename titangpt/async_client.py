@@ -1,200 +1,298 @@
+import asyncio
 import os
+from typing import Any, Dict, List, Optional, Sequence, Union
+
 import aiofiles
-from typing import Any, Dict, Optional, List, Union
-import httpx  
+import httpx
+
+from titangpt.client import (
+    IDEMPOTENT_METHODS,
+    RETRYABLE_STATUS_CODES,
+    JsonObject,
+    ResponseData,
+    _build_file_payload,
+    _extract_gateway_error_message,
+    _extract_validation_message,
+    _join_url,
+    _wrap_data,
+)
 from titangpt.exceptions import (
     APIError,
     AuthenticationError,
-    RateLimitError,
-    ValidationError,
+    AuthorizationError,
+    ConnectionError,
+    DataError,
     ModelNotFoundError,
-    TitanGPTException
+    NotFoundError,
+    RateLimitError,
+    TimeoutError,
+    TitanGPTException,
+    ValidationError,
 )
 
-class TitanResponse(dict):
-    def __getattr__(self, name):
-        try:
-            value = self[name]
-            if isinstance(value, dict):
-                return TitanResponse(value)
-            if isinstance(value, list):
-                return [TitanResponse(i) if isinstance(i, dict) else i for i in value]
-            return value
-        except KeyError:
-            raise AttributeError(f"'TitanResponse' object has no attribute '{name}'")
 
 class AsyncCompletions:
-    def __init__(self, client):
+    def __init__(self, client: "AsyncTitanGPT") -> None:
         self._client = client
 
-    async def create(self, model: str, messages: List[Dict[str, str]], **kwargs) -> Union[TitanResponse, List]:
-        payload = {
-            "model": model,
-            "messages": messages,
-            **kwargs
-        }
+    async def create(
+        self, model: str, messages: List[Dict[str, Any]], **kwargs: Any
+    ) -> ResponseData:
+        payload = {"model": model, "messages": messages, **kwargs}
         return await self._client._post("v1/chat/completions", json=payload)
 
+
 class AsyncChat:
-    def __init__(self, client):
+    def __init__(self, client: "AsyncTitanGPT") -> None:
         self.completions = AsyncCompletions(client)
 
-class AsyncImages:
-    def __init__(self, client):
-        self._client = client
-
-    async def generate(self, prompt: str, model: str = "flux", n: int = 1, size: str = "1024x1024", **kwargs) -> Union[TitanResponse, List]:
-        payload = {
-            "prompt": prompt,
-            "model": model,
-            "n": n,
-            "size": size,
-            **kwargs
-        }
-        return await self._client._post("v1/images/generations", json=payload)
 
 class AsyncAudio:
-    def __init__(self, client):
+    def __init__(self, client: "AsyncTitanGPT") -> None:
         self.transcriptions = AsyncTranscriptions(client)
 
+
 class AsyncTranscriptions:
-    def __init__(self, client):
+    def __init__(self, client: "AsyncTitanGPT") -> None:
         self._client = client
 
-    async def create(self, file, model: str = "whisper-1", **kwargs) -> Union[TitanResponse, List]:
-        files = {}
-        data = {'model': model}
-        
-        for k, v in kwargs.items():
-            data[k] = str(v)
-
-        file_obj = None
-        should_close = False
-
-        try:
-            if isinstance(file, str):
-                file_obj = open(file, 'rb')
-                should_close = True
-                files['file'] = file_obj
-            else:
-                files['file'] = file
-            
-            await self._client._ensure_client()
-            return await self._client._request("POST", "v1/audio/transcriptions", data=data, files=files)
-        finally:
-            if should_close and file_obj:
-                file_obj.close()
+    async def create(
+        self, file: Any, model: str = "whisper-1", **kwargs: Any
+    ) -> ResponseData:
+        data = {"model": model}
+        for key, value in kwargs.items():
+            if value is not None:
+                data[key] = str(value)
+        return await self._client._upload_file(
+            "v1/audio/transcriptions", file=file, data=data
+        )
 
 
 class BaseMusicDownloader:
-    def __init__(self, client):
+    def __init__(self, client: "AsyncTitanGPT") -> None:
         self._client = client
 
-    async def _download_file(self, url: str, save_path: str, file_id: str, method: str = "GET", json_body: dict = None, ext: str = "mp3") -> str:
+    async def _download_file(
+        self,
+        url: str,
+        save_path: str,
+        file_id: str,
+        *,
+        method: str = "GET",
+        json_body: Optional[JsonObject] = None,
+        ext: str = "mp3",
+    ) -> str:
         await self._client._ensure_client()
-        
+        stream_url = _join_url(self._client.base_url, url)
         try:
-            request_kwargs = {"timeout": 300.0}
-            if method == "POST" and json_body:
-                request_kwargs["json"] = json_body
+            async with self._client._session.stream(
+                method,
+                stream_url,
+                json=json_body,
+                timeout=self._client.timeout,
+            ) as response:
+                if response.status_code >= 400:
+                    await response.aread()
+                    await self._client._handle_error(response)
 
-            async with self._client._session.stream(method, url, **request_kwargs) as resp:
-                if resp.status_code >= 400:
-                    await self._client._handle_error(resp)
                 if os.path.isdir(save_path):
-                    filename = f"{file_id}.{ext}"
-                    save_path = os.path.join(save_path, filename)
-                
-                async with aiofiles.open(save_path, mode='wb') as f:
-                    async for chunk in resp.aiter_bytes():
-                        await f.write(chunk)
-                
+                    save_path = os.path.join(save_path, "{0}.{1}".format(file_id, ext))
+
+                async with aiofiles.open(save_path, "wb") as file_obj:
+                    async for chunk in response.aiter_bytes():
+                        if chunk:
+                            await file_obj.write(chunk)
                 return save_path
-        except Exception as e:
-            if isinstance(e, TitanGPTException):
-                raise e
-            raise APIError(f"Download failed: {str(e)}")
+        except httpx.TimeoutException as exc:
+            raise TimeoutError("Download timed out: {0}".format(exc))
+        except httpx.ConnectError as exc:
+            raise ConnectionError("Connection error: {0}".format(exc))
+        except TitanGPTException:
+            raise
+        except Exception as exc:
+            raise APIError("Download failed: {0}".format(exc))
+
 
 class AsyncYandexMusic(BaseMusicDownloader):
-    
-    async def search(self, query: str) -> Union[TitanResponse, List]:
+    async def search(self, query: str) -> ResponseData:
         return await self._client._post("v2/yandex/search", json={"query": query})
 
-    async def lyrics(self, track_id: str) -> Union[TitanResponse, List]:
-        return await self._client._get(f"v2/yandex/lyrics/{track_id}")
+    async def lyrics(self, track_id: str) -> ResponseData:
+        return await self._client._get("v2/yandex/lyrics/{0}".format(track_id))
 
- 
-    async def download(self, track_id: str, save_path: str, lossless: bool = False) -> str:
-        """Скачивает трек, всегда используя метод POST."""
-        url = f"{self._client.base_url}/v2/yandex/download/{track_id}"
+    async def download(
+        self, track_id: str, save_path: str, lossless: bool = False
+    ) -> str:
         return await self._download_file(
-            url,
+            "v2/yandex/download/{0}".format(track_id),
             save_path,
             track_id,
             method="POST",
             json_body={"lossless": lossless},
-            ext="flac" if lossless else "mp3"
+            ext="flac" if lossless else "mp3",
         )
 
-class AsyncYouTubeMusic(BaseMusicDownloader):
 
-    async def search(self, query: str) -> Union[TitanResponse, List]:
+class AsyncYouTubeMusic(BaseMusicDownloader):
+    async def search(self, query: str) -> ResponseData:
         return await self._client._post("v2/youtube/music/search", json={"query": query})
 
-    async def lyrics(self, video_id: str) -> Union[TitanResponse, List]:
-        return await self._client._get(f"v2/youtube/music/lyrics/{video_id}")
+    async def lyrics(self, video_id: str) -> ResponseData:
+        return await self._client._get("v2/youtube/music/lyrics/{0}".format(video_id))
 
     async def download(self, video_id: str, save_path: str) -> str:
-        url = f"{self._client.base_url}/v2/youtube/music/download/{video_id}"
-        return await self._download_file(url, save_path, video_id, method="GET", ext="mp3")
+        return await self._download_file(
+            "v2/youtube/music/download/{0}".format(video_id),
+            save_path,
+            video_id,
+            method="GET",
+            ext="mp3",
+        )
+
 
 class AsyncMusic:
-    def __init__(self, client):
+    def __init__(self, client: "AsyncTitanGPT") -> None:
         self.yandex = AsyncYandexMusic(client)
         self.youtube = AsyncYouTubeMusic(client)
 
+    async def search(self, query: str, provider: str = "youtube") -> ResponseData:
+        provider_name = provider.lower()
+        if provider_name in {"youtube", "yt"}:
+            return await self.youtube.search(query)
+        if provider_name == "yandex":
+            return await self.yandex.search(query)
+        raise ValidationError(
+            "Unsupported music provider: {0}".format(provider_name)
+        )
+
+
 class AsyncModerations:
-    def __init__(self, client):
+    def __init__(self, client: "AsyncTitanGPT") -> None:
         self._client = client
 
-    async def create(self, input: str) -> Union[TitanResponse, List]:
-        return await self._client._post("v1/beta/moderations", json={"input": input})
+    async def create(
+        self, input: Union[str, List[str]], model: Optional[str] = None, **kwargs: Any
+    ) -> ResponseData:
+        payload: JsonObject = {"input": input, **kwargs}
+        if model is not None:
+            payload["model"] = model
+        return await self._client._post("v1/beta/moderations", json=payload)
+
 
 class AsyncThreads:
-    def __init__(self, client):
+    _paths = ("v1/threads", "beta/v1/threads")
+
+    def __init__(self, client: "AsyncTitanGPT") -> None:
         self._client = client
 
-    async def create(self, metadata: Optional[Dict] = None) -> Union[TitanResponse, List]:
-        payload = {}
-        if metadata:
+    async def create(
+        self,
+        messages: Optional[List[Dict[str, Any]]] = None,
+        tool_resources: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, str]] = None,
+    ) -> ResponseData:
+        payload: JsonObject = {}
+        if messages is not None:
+            payload["messages"] = messages
+        if tool_resources is not None:
+            payload["tool_resources"] = tool_resources
+        if metadata is not None:
             payload["metadata"] = metadata
-        return await self._client._post("beta/v1/threads", json=payload)
+        return await self._client._post_any(self._paths, json=payload or None)
 
-    async def add_message(self, thread_id: str, content: str, role: str = "user") -> Union[TitanResponse, List]:
-        payload = {
-            "role": role,
-            "content": content
-        }
-        return await self._client._post(f"beta/v1/threads/{thread_id}/messages", json=payload)
+    async def retrieve(self, thread_id: str) -> ResponseData:
+        return await self._client._get_any(
+            ["{0}/{1}".format(path, thread_id) for path in self._paths]
+        )
 
-    async def run(self, thread_id: str, assistant_id: str, model: str = "gpt-4o", instructions: Optional[str] = None) -> Union[TitanResponse, List]:
-        payload = {
-            "assistant_id": assistant_id,
-            "model": model
-        }
-        if instructions:
+    async def add_message(
+        self,
+        thread_id: str,
+        content: Union[str, List[Dict[str, Any]]],
+        role: str = "user",
+        metadata: Optional[Dict[str, str]] = None,
+    ) -> ResponseData:
+        payload: JsonObject = {"role": role, "content": content}
+        if metadata is not None:
+            payload["metadata"] = metadata
+        return await self._client._post_any(
+            ["{0}/{1}/messages".format(path, thread_id) for path in self._paths],
+            json=payload,
+        )
+
+    async def list_messages(
+        self, thread_id: str, limit: int = 20, order: str = "desc"
+    ) -> ResponseData:
+        return await self._client._get_any(
+            ["{0}/{1}/messages".format(path, thread_id) for path in self._paths],
+            params={"limit": limit, "order": order},
+        )
+
+    async def run(
+        self,
+        thread_id: str,
+        assistant_id: str,
+        model: Optional[str] = None,
+        instructions: Optional[str] = None,
+    ) -> ResponseData:
+        payload: JsonObject = {"assistant_id": assistant_id}
+        if model is not None:
+            payload["model"] = model
+        if instructions is not None:
             payload["instructions"] = instructions
-        return await self._client._post(f"beta/v1/threads/{thread_id}/runs", json=payload)
+        return await self._client._post_any(
+            ["{0}/{1}/runs".format(path, thread_id) for path in self._paths],
+            json=payload,
+        )
 
-    async def list_messages(self, thread_id: str) -> Union[TitanResponse, List]:
-        return await self._client._get(f"beta/v1/threads/{thread_id}/messages")
 
 class AsyncModels:
-    def __init__(self, client):
+    def __init__(self, client: "AsyncTitanGPT") -> None:
         self._client = client
 
-    async def list(self) -> Union[TitanResponse, List]:
-        return await self._client._post("v1/models")
+    async def list(self) -> ResponseData:
+        return await self._client._get_any(
+            ["v1/models", "models"], fallback_methods=("POST",)
+        )
+
+
+class AsyncFiles:
+    def __init__(self, client: "AsyncTitanGPT") -> None:
+        self._client = client
+
+    async def create(
+        self, file: Any, purpose: str = "assistants", ttl: Optional[int] = None
+    ) -> ResponseData:
+        data: Dict[str, str] = {"purpose": purpose}
+        if ttl is not None:
+            data["ttl"] = str(ttl)
+        return await self._client._upload_file("v1/files", file=file, data=data)
+
+    async def list(self) -> ResponseData:
+        return await self._client._get("v1/files")
+
+    async def retrieve(self, file_id: str) -> ResponseData:
+        return await self._client._get("v1/files/{0}".format(file_id))
+
+    async def delete(self, file_id: str) -> ResponseData:
+        return await self._client._delete("v1/files/{0}".format(file_id))
+
+    async def content(
+        self, file_id: str, *, decode: bool = False, encoding: str = "utf-8"
+    ) -> Union[bytes, str]:
+        response = await self._client._get_raw("v1/files/{0}/content".format(file_id))
+        if decode:
+            return response.content.decode(encoding)
+        return response.content
+
+
+class AsyncUsage:
+    def __init__(self, client: "AsyncTitanGPT") -> None:
+        self._client = client
+
+    async def get(self) -> ResponseData:
+        return await self._client._get("v1/usage")
+
 
 class AsyncTitanGPT:
     def __init__(
@@ -202,129 +300,256 @@ class AsyncTitanGPT:
         api_key: Optional[str] = None,
         base_url: str = "https://api.titangpt.ru",
         timeout: int = 60,
-        user_id: Optional[str] = None
-    ):
+        max_retries: int = 3,
+        user_id: Optional[str] = None,
+        product: str = "api",
+    ) -> None:
         self.api_key = api_key or os.getenv("TITANGPT_API_KEY")
         if not self.api_key:
-            raise ValueError("The api_key client option must be set either by passing api_key to the client or by setting the TITANGPT_API_KEY environment variable")
+            raise ValueError(
+                "The api_key client option must be set either by passing api_key "
+                "to the client or by setting the TITANGPT_API_KEY environment variable"
+            )
 
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.max_retries = max_retries
         self.user_id = user_id
-        self._session: Optional[httpx.AsyncClient] = None 
+        self.product = product
+        self._session: Optional[httpx.AsyncClient] = None
+
         self.chat = AsyncChat(self)
-        self.images = AsyncImages(self)
         self.audio = AsyncAudio(self)
         self.music = AsyncMusic(self)
         self.moderations = AsyncModerations(self)
         self.threads = AsyncThreads(self)
         self.models = AsyncModels(self)
+        self.files = AsyncFiles(self)
+        self.usage = AsyncUsage(self)
 
-    async def _ensure_client(self):
+    async def _ensure_client(self) -> None:
         is_closed = getattr(self._session, "is_closed", False) if self._session else True
-        
         if self._session is None or is_closed:
             headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "User-Agent": "TitanGPT-Python-Async/1.2 (HTTP/2)",
-                "Content-Type": "application/json"
+                "Authorization": "Bearer {0}".format(self.api_key),
+                "User-Agent": "TitanGPT-Python-Async/0.2.2",
+                "product": self.product,
             }
             if self.user_id:
                 headers["x-user-id"] = str(self.user_id)
-            
-            self._session = httpx.AsyncClient(
-                headers=headers, 
-                http2=True,
-                timeout=self.timeout
-            )
 
-    async def check_health(self) -> Dict[str, str]:
+            self._session = httpx.AsyncClient(headers=headers, http2=True, timeout=self.timeout)
+
+    async def check_health(self) -> ResponseData:
+        return await self._get("")
+
+    async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         await self._ensure_client()
-        url = f"{self.base_url}/"
-        try:
-            response = await self._session.get(url, timeout=10.0)
-            if response.status_code == 200:
-                return response.json()
-            text = response.text
-            raise APIError(f"Health check failed with status {response.status_code}: {text}")
-        except Exception as e:
-            raise APIError(f"Health check failed: {str(e)}")
+        assert self._session is not None
 
-    async def _request(self, method: str, path: str, json: dict = None, data = None, params: dict = None, files = None) -> Union[TitanResponse, List]:
-        await self._ensure_client()
-        url = f"{self.base_url}/{path}"
-        request_headers = self._session.headers.copy()
-        if files:
-            if "Content-Type" in request_headers:
-                del request_headers["Content-Type"]
+        url = _join_url(self.base_url, path)
+        method_upper = method.upper()
+        attempts = self.max_retries + 1 if method_upper in IDEMPOTENT_METHODS else 1
+        last_error: Optional[TitanGPTException] = None
 
-        try:
-            resp = await self._session.request(
-                method, 
-                url, 
-                json=json, 
-                data=data, 
-                params=params, 
-                files=files,
-                headers=request_headers
-            )
-            
-            if resp.status_code >= 400:
-                await self._handle_error(resp)
+        for attempt in range(attempts):
+            try:
+                response = await self._session.request(
+                    method_upper,
+                    url,
+                    **kwargs
+                )
+            except httpx.TimeoutException as exc:
+                last_error = TimeoutError("Request timed out: {0}".format(exc))
+            except httpx.ConnectError as exc:
+                last_error = ConnectionError("Connection error: {0}".format(exc))
+            except httpx.RequestError as exc:
+                raise APIError("Connection error: {0}".format(exc)) from exc
+            else:
+                if (
+                    response.status_code in RETRYABLE_STATUS_CODES
+                    and attempt < attempts - 1
+                ):
+                    await asyncio.sleep(min(2 ** attempt, 5))
+                    continue
+                if response.status_code >= 400:
+                    await self._handle_error(response)
+                return response
 
-            result = resp.json()
-            if isinstance(result, list):
-                return [TitanResponse(i) if isinstance(i, dict) else i for i in result]
-            return TitanResponse(result)
+            if attempt < attempts - 1:
+                await asyncio.sleep(min(2 ** attempt, 5))
 
-        except httpx.RequestError as e:
-            raise APIError(f"Connection error: {str(e)}")
-        except Exception as e:
-            if isinstance(e, TitanGPTException):
-                raise e
-            raise APIError(f"Unexpected error: {str(e)}")
+        if last_error is not None:
+            raise last_error
+        raise APIError("Request failed before reaching the API")
 
-    async def _post(self, path: str, json: dict = None, data = None) -> Union[TitanResponse, List]:
-        return await self._request("POST", path, json=json, data=data)
+    async def _request_any(
+        self,
+        method: str,
+        paths: Sequence[str],
+        *,
+        fallback_methods: Sequence[str] = (),
+        **kwargs: Any
+    ) -> httpx.Response:
+        last_error: Optional[TitanGPTException] = None
 
-    async def _get(self, path: str, params: dict = None) -> Union[TitanResponse, List]:
+        for candidate_method in (method,) + tuple(fallback_methods):
+            for path in paths:
+                try:
+                    return await self._request(candidate_method, path, **kwargs)
+                except NotFoundError as exc:
+                    last_error = exc
+                    continue
+
+        if last_error is not None:
+            raise last_error
+        raise APIError("No request paths were provided")
+
+    def _process_response(self, response: httpx.Response) -> ResponseData:
+        if response.status_code == 204 or not response.content:
+            return None
+
+        content_type = response.headers.get("Content-Type", "").lower()
+        if "application/json" in content_type or "+json" in content_type:
+            try:
+                return _wrap_data(response.json())
+            except ValueError as exc:
+                raise DataError(
+                    "Expected JSON response but received invalid data",
+                    status_code=response.status_code,
+                    response_body=response.text,
+                ) from exc
+
+        if content_type.startswith("text/"):
+            return response.text
+
+        return response.content
+
+    async def _post(
+        self, path: str, json: Optional[JsonObject] = None, data: Any = None
+    ) -> ResponseData:
+        response = await self._request("POST", path, json=json, data=data)
+        return self._process_response(response)
+
+    async def _post_any(
+        self,
+        paths: Sequence[str],
+        json: Optional[JsonObject] = None,
+        data: Any = None,
+        *,
+        fallback_methods: Sequence[str] = (),
+    ) -> ResponseData:
+        response = await self._request_any(
+            "POST", paths, json=json, data=data, fallback_methods=fallback_methods
+        )
+        return self._process_response(response)
+
+    async def _get(self, path: str, params: Optional[JsonObject] = None) -> ResponseData:
+        response = await self._request("GET", path, params=params)
+        return self._process_response(response)
+
+    async def _get_any(
+        self,
+        paths: Sequence[str],
+        params: Optional[JsonObject] = None,
+        *,
+        fallback_methods: Sequence[str] = (),
+    ) -> ResponseData:
+        response = await self._request_any(
+            "GET", paths, params=params, fallback_methods=fallback_methods
+        )
+        return self._process_response(response)
+
+    async def _get_raw(
+        self, path: str, params: Optional[JsonObject] = None
+    ) -> httpx.Response:
         return await self._request("GET", path, params=params)
 
-    async def _handle_error(self, response: httpx.Response):
+    async def _delete(self, path: str) -> ResponseData:
+        response = await self._request("DELETE", path)
+        return self._process_response(response)
+
+    async def _upload_file(
+        self, path: str, *, file: Any, data: Optional[Dict[str, str]] = None
+    ) -> ResponseData:
+        await self._ensure_client()
+        assert self._session is not None
+
+        opened_file = None
         try:
-            error_data = response.json()
-            message = error_data.get("error", {}).get("message") or error_data.get("message")
-            if not message and "detail" in error_data:
-                message = error_data["detail"]
-        except:
-            message = response.text
+            if isinstance(file, (str, os.PathLike)):
+                opened_file = open(os.fspath(file), "rb")
+                file_payload = _build_file_payload(opened_file)
+            else:
+                file_payload = _build_file_payload(file)
+
+            response = await self._request(
+                "POST",
+                path,
+                files={"file": file_payload},
+                data=data,
+            )
+            return self._process_response(response)
+        finally:
+            if opened_file is not None:
+                opened_file.close()
+
+    async def _handle_error(self, response: httpx.Response) -> None:
+        request_id = response.headers.get("x-request-id") or response.headers.get(
+            "request-id"
+        )
+        response_body: Any = response.text
+        message = None
+
+        try:
+            response_body = response.json()
+            message = response_body.get("error", {}).get("message") or response_body.get(
+                "message"
+            )
+            if not message:
+                message = _extract_validation_message(response_body.get("detail"))
+        except ValueError:
+            message = _extract_gateway_error_message(response.text) or response.text or None
 
         if not message:
-            message = f"Error code: {response.status_code}"
+            message = "Error code: {0}".format(response.status_code)
 
-        status = response.status_code
+        status_code = response.status_code
+        exception_kwargs = {
+            "status_code": status_code,
+            "response_body": response_body,
+            "request_id": request_id,
+        }
 
-        if status == 400:
-            raise ValidationError(message)
-        elif status == 401:
-            raise AuthenticationError(f"Authentication failed: {message}")
-        elif status == 403:
-            raise AuthenticationError(f"Permission denied (Invalid API Key): {message}")
-        elif status == 404:
-            raise ModelNotFoundError(message)
-        elif status == 429:
-            raise RateLimitError(message)
-        else:
-            raise APIError(f"TitanGPT API Error {status}: {message}")
+        if status_code in (400, 422):
+            raise ValidationError(message, **exception_kwargs)
+        if status_code == 401:
+            raise AuthenticationError(
+                "Authentication failed: {0}".format(message), **exception_kwargs
+            )
+        if status_code == 403:
+            raise AuthorizationError(
+                "Permission denied: {0}".format(message), **exception_kwargs
+            )
+        if status_code == 404:
+            if "model" in message.lower():
+                raise ModelNotFoundError(message, **exception_kwargs)
+            raise NotFoundError(message, **exception_kwargs)
+        if status_code == 429:
+            raise RateLimitError(message, **exception_kwargs)
+        raise APIError(
+            "TitanGPT API Error {0}: {1}".format(status_code, message),
+            **exception_kwargs
+        )
 
-    async def close(self):
+    async def close(self) -> None:
         if self._session and not getattr(self._session, "is_closed", False):
             await self._session.aclose()
         self._session = None
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> "AsyncTitanGPT":
         await self._ensure_client()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         await self.close()

@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=77.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "titangpt"
+version = "0.2.2"
+description = "Official Python client for the TitanGPT API"
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.8"
+license = "MIT"
+authors = [
+  { name = "TitanGPT", email = "info@titangpt.ru" }
+]
+keywords = ["titangpt", "ai", "llm", "python-sdk", "openai-compatible"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+  "requests>=2.28.0",
+  "httpx[http2]>=0.25.0",
+  "aiofiles>=23.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2.2",
+  "twine>=6.1.0",
+]
+
+[project.urls]
+Homepage = "https://titangpt.ru"
+Documentation = "https://platform.titangpt.ru"
+Repository = "https://github.com/TitanGPT/titangpt"
+Issues = "https://github.com/TitanGPT/titangpt/issues"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["titangpt*"]

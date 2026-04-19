@@ -1,179 +1,321 @@
 import os
-import json
-from typing import Any, Dict, Optional, List, Union
+import time
+from typing import Any, Dict, List, Optional, Sequence, Union
+
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+
 from titangpt.exceptions import (
     APIError,
     AuthenticationError,
-    RateLimitError,
-    ValidationError,
+    AuthorizationError,
+    ConnectionError,
+    DataError,
     ModelNotFoundError,
-    TitanGPTException
+    NotFoundError,
+    RateLimitError,
+    TimeoutError,
+    TitanGPTException,
+    ValidationError,
 )
 
+
+ResponseData = Union["TitanResponse", List[Any], str, bytes, None]
+JsonObject = Dict[str, Any]
+IDEMPOTENT_METHODS = {"GET", "HEAD", "OPTIONS"}
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+
 class TitanResponse(dict):
-    def __getattr__(self, name):
+    """Dictionary wrapper that also exposes keys as attributes."""
+
+    def __getattr__(self, name: str) -> Any:
         try:
-            value = self[name]
-            if isinstance(value, dict):
-                return TitanResponse(value)
-            if isinstance(value, list):
-                return [TitanResponse(i) if isinstance(i, dict) else i for i in value]
-            return value
-        except KeyError:
-            raise AttributeError(f"'TitanResponse' object has no attribute '{name}'")
+            return _wrap_data(self[name])
+        except KeyError as exc:
+            raise AttributeError(
+                "'TitanResponse' object has no attribute '{0}'".format(name)
+            ) from exc
+
+
+def _wrap_data(value: Any) -> Any:
+    if isinstance(value, dict) and not isinstance(value, TitanResponse):
+        return TitanResponse({key: _wrap_data(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return [_wrap_data(item) for item in value]
+    return value
+
+
+def _join_url(base_url: str, path: str) -> str:
+    if path.startswith("http://") or path.startswith("https://"):
+        return path
+    return "{0}/{1}".format(base_url.rstrip("/"), path.lstrip("/"))
+
+
+def _extract_validation_message(detail: Any) -> Optional[str]:
+    if isinstance(detail, list):
+        parts = []
+        for item in detail:
+            if not isinstance(item, dict):
+                parts.append(str(item))
+                continue
+            location = " -> ".join(str(chunk) for chunk in item.get("loc", []))
+            message = item.get("msg", "Validation error")
+            parts.append("{0}: {1}".format(location, message) if location else message)
+        return "; ".join(parts) if parts else None
+    if detail is None:
+        return None
+    return str(detail)
+
+
+def _extract_gateway_error_message(body: str) -> Optional[str]:
+    if not body:
+        return None
+
+    normalized = " ".join(body.lower().split())
+    if "error 1015" in normalized or "you are being rate limited" in normalized:
+        return "Request was rate-limited by Cloudflare or an upstream gateway"
+    if "<!doctype html>" in normalized and "access denied" in normalized:
+        return "Gateway rejected the request before it reached the API"
+    return None
+
+
+def _build_file_payload(file: Any) -> Any:
+    filename = getattr(file, "name", "upload.bin")
+    return (os.path.basename(filename), file)
+
 
 class Completions:
-    def __init__(self, client):
+    def __init__(self, client: "TitanGPT") -> None:
         self._client = client
 
-    def create(self, model: str, messages: List[Dict[str, str]], **kwargs) -> Union[TitanResponse, List]:
-        payload = {
-            "model": model,
-            "messages": messages,
-            **kwargs
-        }
+    def create(
+        self, model: str, messages: List[Dict[str, Any]], **kwargs: Any
+    ) -> ResponseData:
+        payload = {"model": model, "messages": messages, **kwargs}
         return self._client._post("v1/chat/completions", json=payload)
 
+
 class Chat:
-    def __init__(self, client):
+    def __init__(self, client: "TitanGPT") -> None:
         self.completions = Completions(client)
 
-class Images:
-    def __init__(self, client):
-        self._client = client
-
-    def generate(self, prompt: str, model: str = "flux", n: int = 1, size: str = "1024x1024", **kwargs) -> Union[TitanResponse, List]:
-        payload = {
-            "prompt": prompt,
-            "model": model,
-            "n": n,
-            "size": size,
-            **kwargs
-        }
-        return self._client._post("v1/images/generations", json=payload)
 
 class Audio:
-    def __init__(self, client):
+    def __init__(self, client: "TitanGPT") -> None:
         self.transcriptions = Transcriptions(client)
 
+
 class Transcriptions:
-    def __init__(self, client):
+    def __init__(self, client: "TitanGPT") -> None:
         self._client = client
 
-    def create(self, file, model: str = "whisper-1", **kwargs) -> Union[TitanResponse, List]:
-        if isinstance(file, str):
-             with open(file, "rb") as f:
-                 files = {"file": f}
-                 data = {"model": model, **kwargs}
-                 return self._client._post("v1/audio/transcriptions", files=files, data=data)
-        
-        files = {"file": file}
+    def create(self, file: Any, model: str = "whisper-1", **kwargs: Any) -> ResponseData:
         data = {"model": model, **kwargs}
-        return self._client._post("v1/audio/transcriptions", files=files, data=data)
+        return self._client._upload_file("v1/audio/transcriptions", file=file, data=data)
 
 
 class BaseMusicDownloader:
-    def __init__(self, client):
+    def __init__(self, client: "TitanGPT") -> None:
         self._client = client
 
-    def _download_file(self, url: str, save_path: str, file_id: str, method: str = "GET", json_body: dict = None, ext: str = "mp3") -> str:
+    def _download_file(
+        self,
+        url: str,
+        save_path: str,
+        file_id: str,
+        *,
+        method: str = "GET",
+        json_body: Optional[JsonObject] = None,
+        ext: str = "mp3",
+    ) -> str:
         response = self._client._request(method, url, json=json_body, stream=True)
-        
-        if os.path.isdir(save_path):
-            filename = f"{file_id}.{ext}"
-            save_path = os.path.join(save_path, filename)
 
-        with open(save_path, "wb") as f:
+        if os.path.isdir(save_path):
+            save_path = os.path.join(save_path, "{0}.{1}".format(file_id, ext))
+
+        with open(save_path, "wb") as file_obj:
             for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
+                if chunk:
+                    file_obj.write(chunk)
         return save_path
 
+
 class YandexMusic(BaseMusicDownloader):
-    def search(self, query: str) -> Union[TitanResponse, List]:
+    def search(self, query: str) -> ResponseData:
         return self._client._post("v2/yandex/search", json={"query": query})
 
-    def lyrics(self, track_id: str) -> Union[TitanResponse, List]:
-        return self._client._get(f"v2/yandex/lyrics/{track_id}")
-
+    def lyrics(self, track_id: str) -> ResponseData:
+        return self._client._get("v2/yandex/lyrics/{0}".format(track_id))
 
     def download(self, track_id: str, save_path: str, lossless: bool = False) -> str:
-        """Скачивает трек, всегда используя метод POST."""
         return self._download_file(
-            url=f"v2/yandex/download/{track_id}",
+            url="v2/yandex/download/{0}".format(track_id),
             save_path=save_path,
             file_id=track_id,
             method="POST",
             json_body={"lossless": lossless},
-            ext="flac" if lossless else "mp3"
+            ext="flac" if lossless else "mp3",
         )
 
+
 class YouTubeMusic(BaseMusicDownloader):
-    def search(self, query: str) -> Union[TitanResponse, List]:
+    def search(self, query: str) -> ResponseData:
         return self._client._post("v2/youtube/music/search", json={"query": query})
 
-    def lyrics(self, video_id: str) -> Union[TitanResponse, List]:
-        return self._client._get(f"v2/youtube/music/lyrics/{video_id}")
+    def lyrics(self, video_id: str) -> ResponseData:
+        return self._client._get("v2/youtube/music/lyrics/{0}".format(video_id))
 
     def download(self, video_id: str, save_path: str) -> str:
         return self._download_file(
-            url=f"v2/youtube/music/download/{video_id}",
+            url="v2/youtube/music/download/{0}".format(video_id),
             save_path=save_path,
             file_id=video_id,
             method="GET",
-            ext="mp3"
+            ext="mp3",
         )
 
+
 class Music:
-    def __init__(self, client):
+    def __init__(self, client: "TitanGPT") -> None:
         self.yandex = YandexMusic(client)
         self.youtube = YouTubeMusic(client)
 
+    def search(self, query: str, provider: str = "youtube") -> ResponseData:
+        provider_name = provider.lower()
+        if provider_name in {"youtube", "yt"}:
+            return self.youtube.search(query)
+        if provider_name == "yandex":
+            return self.yandex.search(query)
+        raise ValidationError(
+            "Unsupported music provider: {0}".format(provider_name)
+        )
+
 
 class Moderations:
-    def __init__(self, client):
+    def __init__(self, client: "TitanGPT") -> None:
         self._client = client
 
-    def create(self, input: str) -> Union[TitanResponse, List]:
-        return self._client._post("v1/beta/moderations", json={"input": input})
+    def create(
+        self, input: Union[str, List[str]], model: Optional[str] = None, **kwargs: Any
+    ) -> ResponseData:
+        payload: JsonObject = {"input": input, **kwargs}
+        if model is not None:
+            payload["model"] = model
+        return self._client._post("v1/beta/moderations", json=payload)
+
 
 class Threads:
-    def __init__(self, client):
+    _paths = ("v1/threads", "beta/v1/threads")
+
+    def __init__(self, client: "TitanGPT") -> None:
         self._client = client
 
-    def create(self, metadata: Optional[Dict] = None) -> Union[TitanResponse, List]:
-        payload = {}
-        if metadata:
+    def create(
+        self,
+        messages: Optional[List[Dict[str, Any]]] = None,
+        tool_resources: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, str]] = None,
+    ) -> ResponseData:
+        payload: JsonObject = {}
+        if messages is not None:
+            payload["messages"] = messages
+        if tool_resources is not None:
+            payload["tool_resources"] = tool_resources
+        if metadata is not None:
             payload["metadata"] = metadata
-        return self._client._post("beta/v1/threads", json=payload)
+        return self._client._post_any(self._paths, json=payload or None)
 
-    def add_message(self, thread_id: str, content: str, role: str = "user") -> Union[TitanResponse, List]:
-        payload = {
-            "role": role,
-            "content": content
-        }
-        return self._client._post(f"beta/v1/threads/{thread_id}/messages", json=payload)
+    def retrieve(self, thread_id: str) -> ResponseData:
+        return self._client._get_any(
+            ["{0}/{1}".format(path, thread_id) for path in self._paths]
+        )
 
-    def run(self, thread_id: str, assistant_id: str, model: str = "gpt-4o", instructions: Optional[str] = None) -> Union[TitanResponse, List]:
-        payload = {
-            "assistant_id": assistant_id,
-            "model": model
-        }
-        if instructions:
+    def add_message(
+        self,
+        thread_id: str,
+        content: Union[str, List[Dict[str, Any]]],
+        role: str = "user",
+        metadata: Optional[Dict[str, str]] = None,
+    ) -> ResponseData:
+        payload: JsonObject = {"role": role, "content": content}
+        if metadata is not None:
+            payload["metadata"] = metadata
+        return self._client._post_any(
+            ["{0}/{1}/messages".format(path, thread_id) for path in self._paths],
+            json=payload,
+        )
+
+    def list_messages(
+        self, thread_id: str, limit: int = 20, order: str = "desc"
+    ) -> ResponseData:
+        return self._client._get_any(
+            ["{0}/{1}/messages".format(path, thread_id) for path in self._paths],
+            params={"limit": limit, "order": order},
+        )
+
+    def run(
+        self,
+        thread_id: str,
+        assistant_id: str,
+        model: Optional[str] = None,
+        instructions: Optional[str] = None,
+    ) -> ResponseData:
+        payload: JsonObject = {"assistant_id": assistant_id}
+        if model is not None:
+            payload["model"] = model
+        if instructions is not None:
             payload["instructions"] = instructions
-        return self._client._post(f"beta/v1/threads/{thread_id}/runs", json=payload)
+        return self._client._post_any(
+            ["{0}/{1}/runs".format(path, thread_id) for path in self._paths],
+            json=payload,
+        )
 
-    def list_messages(self, thread_id: str) -> Union[TitanResponse, List]:
-        return self._client._get(f"beta/v1/threads/{thread_id}/messages")
 
 class Models:
-    def __init__(self, client):
+    def __init__(self, client: "TitanGPT") -> None:
         self._client = client
 
-    def list(self) -> Union[TitanResponse, List]:
-        return self._client._post("v1/models")
+    def list(self) -> ResponseData:
+        return self._client._get_any(["v1/models", "models"], fallback_methods=("POST",))
+
+
+class Files:
+    def __init__(self, client: "TitanGPT") -> None:
+        self._client = client
+
+    def create(
+        self, file: Any, purpose: str = "assistants", ttl: Optional[int] = None
+    ) -> ResponseData:
+        data: JsonObject = {"purpose": purpose}
+        if ttl is not None:
+            data["ttl"] = ttl
+        return self._client._upload_file("v1/files", file=file, data=data)
+
+    def list(self) -> ResponseData:
+        return self._client._get("v1/files")
+
+    def retrieve(self, file_id: str) -> ResponseData:
+        return self._client._get("v1/files/{0}".format(file_id))
+
+    def delete(self, file_id: str) -> ResponseData:
+        return self._client._delete("v1/files/{0}".format(file_id))
+
+    def content(
+        self, file_id: str, *, decode: bool = False, encoding: str = "utf-8"
+    ) -> Union[bytes, str]:
+        response = self._client._get_raw("v1/files/{0}/content".format(file_id))
+        if decode:
+            return response.content.decode(encoding)
+        return response.content
+
+
+class Usage:
+    def __init__(self, client: "TitanGPT") -> None:
+        self._client = client
+
+    def get(self) -> ResponseData:
+        return self._client._get("v1/usage")
+
 
 class TitanGPT:
     def __init__(
@@ -182,119 +324,237 @@ class TitanGPT:
         base_url: str = "https://api.titangpt.ru",
         timeout: int = 60,
         max_retries: int = 3,
-        user_id: Optional[str] = None
-    ):
+        user_id: Optional[str] = None,
+        product: str = "api",
+    ) -> None:
         self.api_key = api_key or os.getenv("TITANGPT_API_KEY")
         if not self.api_key:
-            raise ValueError("The api_key client option must be set either by passing api_key to the client or by setting the TITANGPT_API_KEY environment variable")
+            raise ValueError(
+                "The api_key client option must be set either by passing api_key "
+                "to the client or by setting the TITANGPT_API_KEY environment variable"
+            )
 
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        
+        self.max_retries = max_retries
         self.session = requests.Session()
-        
-        retry_strategy = Retry(
-            total=max_retries,
-            backoff_factor=1,
-            status_forcelist=[500, 502, 503, 504],
-            allowed_methods=["GET", "POST", "PUT", "DELETE"],
+        self.session.headers.update(
+            {
+                "Authorization": "Bearer {0}".format(self.api_key),
+                "User-Agent": "TitanGPT-Python/0.2.2",
+                "product": product,
+            }
         )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        self.session.mount("http://", adapter)
-        self.session.mount("https://", adapter)
-        
-        auth_val = f"Bearer {self.api_key}"
-        headers = {
-            "Authorization": auth_val, 
-            "User-Agent": "TitanGPT-Python/1.2",
-        }
         if user_id:
-            headers["x-user-id"] = str(user_id)
-            
-        self.session.headers.update(headers)
+            self.session.headers["x-user-id"] = str(user_id)
 
         self.chat = Chat(self)
-        self.images = Images(self)
         self.audio = Audio(self)
         self.music = Music(self)
         self.moderations = Moderations(self)
         self.threads = Threads(self)
         self.models = Models(self)
+        self.files = Files(self)
+        self.usage = Usage(self)
 
-    def check_health(self) -> Dict[str, str]:
-        url = f"{self.base_url}/" 
-        try:
-            response = self.session.get(url, timeout=10)
-            if response.status_code == 200:
-                return response.json()
+    def check_health(self) -> ResponseData:
+        return self._get("")
+
+    def _request(self, method: str, path: str, **kwargs: Any) -> requests.Response:
+        url = _join_url(self.base_url, path)
+        method_upper = method.upper()
+        attempts = self.max_retries + 1 if method_upper in IDEMPOTENT_METHODS else 1
+        last_error: Optional[TitanGPTException] = None
+
+        for attempt in range(attempts):
+            try:
+                response = self.session.request(
+                    method_upper,
+                    url,
+                    timeout=self.timeout,
+                    **kwargs
+                )
+            except requests.Timeout as exc:
+                last_error = TimeoutError("Request timed out: {0}".format(exc))
+            except requests.ConnectionError as exc:
+                last_error = ConnectionError("Connection error: {0}".format(exc))
+            except requests.RequestException as exc:
+                raise APIError("Connection error: {0}".format(exc)) from exc
             else:
-                raise APIError(f"Health check failed with status {response.status_code}: {response.text}")
-        except requests.exceptions.RequestException as e:
-            raise APIError(f"Health check failed: {str(e)}")
+                if (
+                    response.status_code in RETRYABLE_STATUS_CODES
+                    and attempt < attempts - 1
+                ):
+                    time.sleep(min(2 ** attempt, 5))
+                    continue
+                if response.status_code >= 400:
+                    self._handle_error(response)
+                return response
 
-    def _request(self, method: str, path: str, **kwargs) -> requests.Response:
-        if path.startswith("http"):
-             url = path
-        else:
-             url = f"{self.base_url}/{path}"
-             
-        try:
-            response = self.session.request(method, url, timeout=self.timeout, **kwargs)
-            if response.status_code >= 400:
-                self._handle_error(response)
-            return response
-        except requests.exceptions.RequestException as e:
-            if isinstance(e, TitanGPTException):
-                raise e
-            raise APIError(f"Connection error: {str(e)}") from e
-        except Exception as e:
-            if isinstance(e, TitanGPTException):
-                raise e
-            raise APIError(f"Unexpected error: {str(e)}")
+            if attempt < attempts - 1:
+                time.sleep(min(2 ** attempt, 5))
 
-    def _process_response(self, response: requests.Response) -> Union[TitanResponse, List]:
-        data = response.json()
-        if isinstance(data, list):
-            return [TitanResponse(i) if isinstance(i, dict) else i for i in data]
-        return TitanResponse(data)
+        if last_error is not None:
+            raise last_error
+        raise APIError("Request failed before reaching the API")
 
-    def _post(self, path: str, json: dict = None, files=None, data=None) -> Union[TitanResponse, List]:
-        response = self._request("POST", path, json=json, files=files, data=data)
+    def _request_any(
+        self,
+        method: str,
+        paths: Sequence[str],
+        *,
+        fallback_methods: Sequence[str] = (),
+        **kwargs: Any
+    ) -> requests.Response:
+        last_error: Optional[TitanGPTException] = None
+
+        for candidate_method in (method,) + tuple(fallback_methods):
+            for path in paths:
+                try:
+                    return self._request(candidate_method, path, **kwargs)
+                except NotFoundError as exc:
+                    last_error = exc
+                    continue
+
+        if last_error is not None:
+            raise last_error
+        raise APIError("No request paths were provided")
+
+    def _process_response(self, response: requests.Response) -> ResponseData:
+        if response.status_code == 204 or not response.content:
+            return None
+
+        content_type = response.headers.get("Content-Type", "").lower()
+        if "application/json" in content_type or "+json" in content_type:
+            try:
+                return _wrap_data(response.json())
+            except ValueError as exc:
+                raise DataError(
+                    "Expected JSON response but received invalid data",
+                    status_code=response.status_code,
+                    response_body=response.text,
+                ) from exc
+
+        if content_type.startswith("text/"):
+            return response.text
+
+        return response.content
+
+    def _post(self, path: str, json: Optional[JsonObject] = None, data: Any = None) -> ResponseData:
+        response = self._request("POST", path, json=json, data=data)
         return self._process_response(response)
 
-    def _get(self, path: str, params: dict = None) -> Union[TitanResponse, List]:
+    def _post_any(
+        self,
+        paths: Sequence[str],
+        json: Optional[JsonObject] = None,
+        data: Any = None,
+        *,
+        fallback_methods: Sequence[str] = (),
+    ) -> ResponseData:
+        response = self._request_any(
+            "POST", paths, json=json, data=data, fallback_methods=fallback_methods
+        )
+        return self._process_response(response)
+
+    def _get(self, path: str, params: Optional[JsonObject] = None) -> ResponseData:
         response = self._request("GET", path, params=params)
         return self._process_response(response)
 
-    def _handle_error(self, response):
+    def _get_any(
+        self,
+        paths: Sequence[str],
+        params: Optional[JsonObject] = None,
+        *,
+        fallback_methods: Sequence[str] = (),
+    ) -> ResponseData:
+        response = self._request_any(
+            "GET", paths, params=params, fallback_methods=fallback_methods
+        )
+        return self._process_response(response)
+
+    def _get_raw(self, path: str, params: Optional[JsonObject] = None) -> requests.Response:
+        return self._request("GET", path, params=params)
+
+    def _delete(self, path: str) -> ResponseData:
+        response = self._request("DELETE", path)
+        return self._process_response(response)
+
+    def _upload_file(
+        self, path: str, *, file: Any, data: Optional[JsonObject] = None
+    ) -> ResponseData:
+        opened_file = None
         try:
-            error_json = response.json()
-            message = error_json.get("error", {}).get("message") or error_json.get("message")
-            if not message and "detail" in error_json:
-                message = error_json["detail"]
+            if isinstance(file, (str, os.PathLike)):
+                opened_file = open(os.fspath(file), "rb")
+                file_payload = _build_file_payload(opened_file)
+            else:
+                file_payload = _build_file_payload(file)
+
+            response = self._request(
+                "POST",
+                path,
+                files={"file": file_payload},
+                data=data,
+            )
+            return self._process_response(response)
+        finally:
+            if opened_file is not None:
+                opened_file.close()
+
+    def _handle_error(self, response: requests.Response) -> None:
+        request_id = response.headers.get("x-request-id") or response.headers.get(
+            "request-id"
+        )
+        response_body: Any = response.text
+        message = None
+
+        try:
+            response_body = response.json()
+            message = response_body.get("error", {}).get("message") or response_body.get(
+                "message"
+            )
+            if not message:
+                message = _extract_validation_message(response_body.get("detail"))
         except ValueError:
-            message = response.text
+            message = _extract_gateway_error_message(response.text) or response.text or None
 
         if not message:
-            message = f"Error code: {response.status_code}"
+            message = "Error code: {0}".format(response.status_code)
 
-        if response.status_code == 400:
-            raise ValidationError(message)
-        elif response.status_code == 401:
-            raise AuthenticationError(f"Authentication failed: {message}")
-        elif response.status_code == 403:
-            raise AuthenticationError(f"Permission denied (Invalid API Key or Model): {message}")
-        elif response.status_code == 404:
-            raise ModelNotFoundError(message)
-        elif response.status_code == 429:
-            raise RateLimitError(message)
-        else:
-            raise APIError(f"TitanGPT API Error {response.status_code}: {message}")
+        status_code = response.status_code
+        exception_kwargs = {
+            "status_code": status_code,
+            "response_body": response_body,
+            "request_id": request_id,
+        }
 
-    def close(self):
+        if status_code in (400, 422):
+            raise ValidationError(message, **exception_kwargs)
+        if status_code == 401:
+            raise AuthenticationError(
+                "Authentication failed: {0}".format(message), **exception_kwargs
+            )
+        if status_code == 403:
+            raise AuthorizationError(
+                "Permission denied: {0}".format(message), **exception_kwargs
+            )
+        if status_code == 404:
+            if "model" in message.lower():
+                raise ModelNotFoundError(message, **exception_kwargs)
+            raise NotFoundError(message, **exception_kwargs)
+        if status_code == 429:
+            raise RateLimitError(message, **exception_kwargs)
+        raise APIError(
+            "TitanGPT API Error {0}: {1}".format(status_code, message),
+            **exception_kwargs
+        )
+
+    def close(self) -> None:
         self.session.close()
 
-    def __enter__(self):
+    def __enter__(self) -> "TitanGPT":
         return self
-    def __exit__(self, exc_type, exc_val, exc_tb):
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         self.close()

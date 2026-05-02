@@ -79,13 +79,6 @@ client = TitanGPT(
 )
 ```
 
-## Build
-
-```bash
-python -m build
-python -m twine check dist/*
-```
-
 ## Links
 
 - Website: [titangpt.ru](https://titangpt.ru)

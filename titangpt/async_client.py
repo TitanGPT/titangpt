@@ -166,19 +166,6 @@ class AsyncMusic:
         )
 
 
-class AsyncModerations:
-    def __init__(self, client: "AsyncTitanGPT") -> None:
-        self._client = client
-
-    async def create(
-        self, input: Union[str, List[str]], model: Optional[str] = None, **kwargs: Any
-    ) -> ResponseData:
-        payload: JsonObject = {"input": input, **kwargs}
-        if model is not None:
-            payload["model"] = model
-        return await self._client._post("v1/beta/moderations", json=payload)
-
-
 class AsyncThreads:
     _paths = ("v1/threads", "beta/v1/threads")
 
@@ -298,7 +285,7 @@ class AsyncTitanGPT:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        base_url: str = "https://api.titangpt.ru",
+        base_url: str = "https://api.titangpt.xyz",
         timeout: int = 60,
         max_retries: int = 3,
         user_id: Optional[str] = None,
@@ -321,7 +308,6 @@ class AsyncTitanGPT:
         self.chat = AsyncChat(self)
         self.audio = AsyncAudio(self)
         self.music = AsyncMusic(self)
-        self.moderations = AsyncModerations(self)
         self.threads = AsyncThreads(self)
         self.models = AsyncModels(self)
         self.files = AsyncFiles(self)

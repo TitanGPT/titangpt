@@ -12,15 +12,12 @@ The package includes:
 - `chat.completions`
 - `models.list`
 - `files`
-- `moderations`
 - `threads`
 - `usage`
 - `audio.transcriptions`
 - `music.youtube`
 - `music.yandex`
 - sync and async clients
-
-`images` has been removed from the public SDK surface.
 
 ## Installation
 
@@ -74,7 +71,7 @@ asyncio.run(main())
 ```python
 client = TitanGPT(
     api_key="YOUR_API_KEY",
-    base_url="https://api.titangpt.ru",
+    base_url="https://api.titangpt.xyz",
     timeout=60,
     max_retries=3,
     user_id="12345",
@@ -93,7 +90,7 @@ python -m twine check dist/*
 
 - Website: [titangpt.ru](https://titangpt.ru)
 - Documentation: [platform.titangpt.ru](https://platform.titangpt.ru)
-- API endpoint: `https://api.titangpt.ru`
+- API endpoint: `https://api.titangpt.xyz`
 - Telegram: [@titangpt_channel](https://t.me/titangpt_channel)
 
 ## License

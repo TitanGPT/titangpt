@@ -14,7 +14,7 @@ from titangpt.exceptions import (
     ValidationError,
 )
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 __author__ = "TitanGPT"
 __license__ = "MIT"
 
@@ -38,7 +38,7 @@ _client = None
 
 def get_client(
     api_key: str = None,
-    base_url: str = "https://api.titangpt.ru",
+    base_url: str = "https://api.titangpt.xyz",
     timeout: int = 60,
     max_retries: int = 3,
 ) -> TitanGPT:

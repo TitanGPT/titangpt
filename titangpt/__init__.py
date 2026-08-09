@@ -14,7 +14,7 @@ from titangpt.exceptions import (
     ValidationError,
 )
 
-__version__ = "0.2.3"
+__version__ = "0.2.4"
 __author__ = "TitanGPT"
 __license__ = "MIT"
 
@@ -32,6 +32,7 @@ __all__ = [
     "TimeoutError",
     "ConnectionError",
     "DataError",
+    "__version__",
 ]
 
 _client = None

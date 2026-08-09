@@ -5,26 +5,21 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 import aiofiles
 import httpx
 
+from titangpt._error_handling import raise_api_error
 from titangpt.client import (
     IDEMPOTENT_METHODS,
     RETRYABLE_STATUS_CODES,
     JsonObject,
     ResponseData,
     _build_file_payload,
-    _extract_gateway_error_message,
-    _extract_validation_message,
     _join_url,
     _wrap_data,
 )
 from titangpt.exceptions import (
     APIError,
-    AuthenticationError,
-    AuthorizationError,
     ConnectionError,
     DataError,
-    ModelNotFoundError,
     NotFoundError,
-    RateLimitError,
     TimeoutError,
     TitanGPTException,
     ValidationError,
@@ -289,7 +284,6 @@ class AsyncTitanGPT:
         timeout: int = 60,
         max_retries: int = 3,
         user_id: Optional[str] = None,
-        product: str = "api",
     ) -> None:
         self.api_key = api_key or os.getenv("TITANGPT_API_KEY")
         if not self.api_key:
@@ -302,7 +296,6 @@ class AsyncTitanGPT:
         self.timeout = timeout
         self.max_retries = max_retries
         self.user_id = user_id
-        self.product = product
         self._session: Optional[httpx.AsyncClient] = None
 
         self.chat = AsyncChat(self)
@@ -318,8 +311,7 @@ class AsyncTitanGPT:
         if self._session is None or is_closed:
             headers = {
                 "Authorization": "Bearer {0}".format(self.api_key),
-                "User-Agent": "TitanGPT-Python-Async/0.2.2",
-                "product": self.product,
+                "User-Agent": "TitanGPT-Python-Async/0.2.4"
             }
             if self.user_id:
                 headers["x-user-id"] = str(self.user_id)
@@ -485,47 +477,17 @@ class AsyncTitanGPT:
             "request-id"
         )
         response_body: Any = response.text
-        message = None
 
         try:
             response_body = response.json()
-            message = response_body.get("error", {}).get("message") or response_body.get(
-                "message"
-            )
-            if not message:
-                message = _extract_validation_message(response_body.get("detail"))
         except ValueError:
-            message = _extract_gateway_error_message(response.text) or response.text or None
+            pass
 
-        if not message:
-            message = "Error code: {0}".format(response.status_code)
-
-        status_code = response.status_code
-        exception_kwargs = {
-            "status_code": status_code,
-            "response_body": response_body,
-            "request_id": request_id,
-        }
-
-        if status_code in (400, 422):
-            raise ValidationError(message, **exception_kwargs)
-        if status_code == 401:
-            raise AuthenticationError(
-                "Authentication failed: {0}".format(message), **exception_kwargs
-            )
-        if status_code == 403:
-            raise AuthorizationError(
-                "Permission denied: {0}".format(message), **exception_kwargs
-            )
-        if status_code == 404:
-            if "model" in message.lower():
-                raise ModelNotFoundError(message, **exception_kwargs)
-            raise NotFoundError(message, **exception_kwargs)
-        if status_code == 429:
-            raise RateLimitError(message, **exception_kwargs)
-        raise APIError(
-            "TitanGPT API Error {0}: {1}".format(status_code, message),
-            **exception_kwargs
+        raise_api_error(
+            status_code=response.status_code,
+            response_body=response_body,
+            raw_text=response.text,
+            request_id=request_id,
         )
 
     async def close(self) -> None:

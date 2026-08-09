@@ -11,12 +11,18 @@ class TitanGPTException(Exception):
         status_code: Optional[int] = None,
         response_body: Any = None,
         request_id: Optional[str] = None,
+        error_type: Optional[str] = None,
+        param: Any = None,
+        code: Any = None,
     ) -> None:
         super().__init__(message)
         self.message = message
         self.status_code = status_code
         self.response_body = response_body
         self.request_id = request_id
+        self.error_type = error_type
+        self.param = param
+        self.code = code
 
     def __str__(self) -> str:
         return self.message or self.__class__.__name__

@@ -1,2 +1,7 @@
 include README.md
+include CHANGELOG.md
 include LICENSE
+include pyproject.toml
+include requirements.txt
+recursive-include tests *.py
+recursive-include titangpt py.typed

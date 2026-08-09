@@ -4,15 +4,12 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 
 import requests
 
+from titangpt._error_handling import raise_api_error
 from titangpt.exceptions import (
     APIError,
-    AuthenticationError,
-    AuthorizationError,
     ConnectionError,
     DataError,
-    ModelNotFoundError,
     NotFoundError,
-    RateLimitError,
     TimeoutError,
     TitanGPTException,
     ValidationError,
@@ -49,34 +46,6 @@ def _join_url(base_url: str, path: str) -> str:
     if path.startswith("http://") or path.startswith("https://"):
         return path
     return "{0}/{1}".format(base_url.rstrip("/"), path.lstrip("/"))
-
-
-def _extract_validation_message(detail: Any) -> Optional[str]:
-    if isinstance(detail, list):
-        parts = []
-        for item in detail:
-            if not isinstance(item, dict):
-                parts.append(str(item))
-                continue
-            location = " -> ".join(str(chunk) for chunk in item.get("loc", []))
-            message = item.get("msg", "Validation error")
-            parts.append("{0}: {1}".format(location, message) if location else message)
-        return "; ".join(parts) if parts else None
-    if detail is None:
-        return None
-    return str(detail)
-
-
-def _extract_gateway_error_message(body: str) -> Optional[str]:
-    if not body:
-        return None
-
-    normalized = " ".join(body.lower().split())
-    if "error 1015" in normalized or "you are being rate limited" in normalized:
-        return "Request was rate-limited by Cloudflare or an upstream gateway"
-    if "<!doctype html>" in normalized and "access denied" in normalized:
-        return "Gateway rejected the request before it reached the API"
-    return None
 
 
 def _build_file_payload(file: Any) -> Any:
@@ -312,7 +281,6 @@ class TitanGPT:
         timeout: int = 60,
         max_retries: int = 3,
         user_id: Optional[str] = None,
-        product: str = "api",
     ) -> None:
         self.api_key = api_key or os.getenv("TITANGPT_API_KEY")
         if not self.api_key:
@@ -328,8 +296,7 @@ class TitanGPT:
         self.session.headers.update(
             {
                 "Authorization": "Bearer {0}".format(self.api_key),
-                "User-Agent": "TitanGPT-Python/0.2.2",
-                "product": product,
+                "User-Agent": "TitanGPT-Python/0.2.4"
             }
         )
         if user_id:
@@ -493,47 +460,17 @@ class TitanGPT:
             "request-id"
         )
         response_body: Any = response.text
-        message = None
 
         try:
             response_body = response.json()
-            message = response_body.get("error", {}).get("message") or response_body.get(
-                "message"
-            )
-            if not message:
-                message = _extract_validation_message(response_body.get("detail"))
         except ValueError:
-            message = _extract_gateway_error_message(response.text) or response.text or None
+            pass
 
-        if not message:
-            message = "Error code: {0}".format(response.status_code)
-
-        status_code = response.status_code
-        exception_kwargs = {
-            "status_code": status_code,
-            "response_body": response_body,
-            "request_id": request_id,
-        }
-
-        if status_code in (400, 422):
-            raise ValidationError(message, **exception_kwargs)
-        if status_code == 401:
-            raise AuthenticationError(
-                "Authentication failed: {0}".format(message), **exception_kwargs
-            )
-        if status_code == 403:
-            raise AuthorizationError(
-                "Permission denied: {0}".format(message), **exception_kwargs
-            )
-        if status_code == 404:
-            if "model" in message.lower():
-                raise ModelNotFoundError(message, **exception_kwargs)
-            raise NotFoundError(message, **exception_kwargs)
-        if status_code == 429:
-            raise RateLimitError(message, **exception_kwargs)
-        raise APIError(
-            "TitanGPT API Error {0}: {1}".format(status_code, message),
-            **exception_kwargs
+        raise_api_error(
+            status_code=response.status_code,
+            response_body=response_body,
+            raw_text=response.text,
+            request_id=request_id,
         )
 
     def close(self) -> None:

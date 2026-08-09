@@ -4,15 +4,26 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "titangpt"
-version = "0.2.3"
-description = "Official Python client for the TitanGPT API"
-readme = { file = "README.md", content-type = "text/markdown" }
+version = "0.2.4"
+description = "Official sync and async Python SDK for the OpenAI-compatible TitanGPT API"
+readme = "README.md"
 requires-python = ">=3.8"
 license = "MIT"
+license-files = ["LICENSE"]
 authors = [
   { name = "TitanGPT", email = "info@titangpt.ru" }
 ]
-keywords = ["titangpt", "ai", "llm", "python-sdk", "openai-compatible"]
+maintainers = [
+  { name = "TitanGPT", email = "info@titangpt.ru" }
+]
+keywords = [
+  "titangpt",
+  "ai",
+  "generative-ai",
+  "llm",
+  "python-sdk",
+  "openai-compatible",
+]
 classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Developers",
@@ -24,7 +35,9 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
   "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
 ]
 dependencies = [
   "requests>=2.28.0",
@@ -39,13 +52,18 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://titangpt.ru"
-Documentation = "https://platform.titangpt.ru"
+Homepage = "https://titangpt.xyz"
+Documentation = "https://platform.titangpt.xyz"
 Repository = "https://github.com/TitanGPT/titangpt"
 Issues = "https://github.com/TitanGPT/titangpt/issues"
+Changelog = "https://github.com/TitanGPT/titangpt/blob/main/CHANGELOG.md"
+Status = "https://status.titangpt.xyz"
 
 [tool.setuptools]
 include-package-data = true
 
 [tool.setuptools.packages.find]
 include = ["titangpt*"]
+
+[tool.setuptools.package-data]
+titangpt = ["py.typed"]

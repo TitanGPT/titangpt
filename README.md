@@ -81,8 +81,8 @@ client = TitanGPT(
 
 ## Links
 
-- Website: [titangpt.ru](https://titangpt.ru)
-- Documentation: [platform.titangpt.ru](https://platform.titangpt.ru)
+- Website: [titangpt.xyz](https://titangpt.xyz)
+- Documentation: [platform.titangpt.xyz](https://platform.titangpt.xyz)
 - API endpoint: `https://api.titangpt.xyz`
 - Telegram: [@titangpt_channel](https://t.me/titangpt_channel)
 
